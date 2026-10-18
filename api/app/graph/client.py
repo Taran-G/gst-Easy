@@ -46,9 +46,14 @@ def load_cypher_template(template_name: str) -> str:
         _query_cache[template_name] = cypher
         return cypher
 
+def reset_db_connection():
+    global _db_instance
+    _db_instance = None
+
 def query(graph, template_name: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Executes a parameterised Cypher template from api/app/graph/queries/*.cypher.
+    Retries once on connection drop.
     Returns:
       {
         "rows": List[List[Any]],
@@ -60,7 +65,12 @@ def query(graph, template_name: str, params: Optional[Dict[str, Any]] = None) ->
     cypher_text = load_cypher_template(template_name)
     params = params or {}
     
-    res = graph.query(cypher_text, params)
+    try:
+        res = graph.query(cypher_text, params)
+    except Exception as e:
+        # Retry once after resetting connection in case of temporary socket drop
+        reset_db_connection()
+        res = graph.query(cypher_text, params)
     
     rows = getattr(res, "result_set", []) or []
     header = getattr(res, "header", []) or []

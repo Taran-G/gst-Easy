@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
-from app.adapters.gsp_mock import MockGspAdapter
+from datetime import datetime, timezone
+from app.adapters.gsp_live import LiveGspAdapter
+from app.adapters.tally_bridge import TallyHttpBridge
 from app.core.security import require_tenant_access, get_current_user
 from app.graph.client import tenant_graph
 from app.services.reconcile import import_gstr2b_entries, run_reconciliation
@@ -12,7 +14,8 @@ from app.services.tally_xml import generate_tally_xml_batch
 
 router = APIRouter(prefix="", tags=["reconcile"])
 
-gsp_mock = MockGspAdapter()
+gsp_adapter = LiveGspAdapter()
+tally_bridge = TallyHttpBridge()
 
 class TallyExportRequest(BaseModel):
     invoice_ids: List[str]
@@ -23,8 +26,8 @@ def import_gstr2b(
     tenant_id: str = Depends(require_tenant_access),
     user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Imports GSTR-2B entries for a period using GspPort mock or fixtures."""
-    entries = gsp_mock.get_gstr2b(tenant_id, period)
+    """Imports GSTR-2B entries for a period using GspPort mock or live GSP API."""
+    entries = gsp_adapter.get_gstr2b(tenant_id, period)
     if not entries:
         raise HTTPException(status_code=404, detail=f"No GSTR-2B entries found for period {period}")
         
@@ -41,7 +44,7 @@ def trigger_reconciliation(
 ):
     """Executes matching engine between books and GSTR-2B."""
     # Ensure 2B is loaded first
-    import_gstr2b_entries(tenant_id, period, gsp_mock.get_gstr2b(tenant_id, period))
+    import_gstr2b_entries(tenant_id, period, gsp_adapter.get_gstr2b(tenant_id, period))
     res = run_reconciliation(tenant_id, period, from_date, to_date)
     return res
 
@@ -152,3 +155,72 @@ def mark_tally_imported(
             {"id": inv_id, "guid": guid, "now": now_iso}
         )
     return {"status": "success", "marked_posted_count": len(req.invoice_ids)}
+
+@router.post("/tally/sync-direct")
+def sync_tally_direct(
+    req: TallyExportRequest,
+    tenant_id: str = Depends(require_tenant_access),
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Directly posts generated XML to TallyPrime HTTP server on localhost:9000.
+    Automatically marks invoices POSTED if Tally acknowledges creation.
+    """
+    g = tenant_graph(tenant_id)
+    invoices = []
+    
+    for inv_id in req.invoice_ids:
+        res = g.query(
+            """
+            MATCH (v:Vendor)-[:ISSUED]->(i:Invoice {id: $id})
+            OPTIONAL MATCH (v)-[:MAPS_TO_LEDGER]->(tl:TallyLedger)
+            RETURN i.id, i.number, i.number_norm, i.date, i.fy, i.taxable,
+                   i.cgst, i.sgst, i.igst, i.total, v.gstin, v.legal_name, tl.name
+            """,
+            {"id": inv_id}
+        )
+        if res.result_set and len(res.result_set) > 0:
+            r = res.result_set[0]
+            invoices.append({
+                "id": r[0],
+                "invoice_number": r[1],
+                "number_norm": r[2],
+                "invoice_date": r[3],
+                "fy": r[4],
+                "taxable_amount": r[5],
+                "cgst_amount": r[6],
+                "sgst_amount": r[7],
+                "igst_amount": r[8],
+                "total_amount": r[9],
+                "supplier": {
+                    "gstin": r[10],
+                    "name": r[11],
+                    "tally_ledger": r[12]
+                }
+            })
+            
+    if not invoices:
+        raise HTTPException(status_code=400, detail="No invoices found to sync")
+        
+    sync_result = tally_bridge.sync_to_tally_direct(tenant_id, invoices)
+    
+    if sync_result.get("status") == "synced":
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for inv_id in req.invoice_ids:
+            g.query(
+                """
+                MATCH (i:Invoice {id: $id})
+                CREATE (tv:TallyVoucher {
+                    guid: $guid,
+                    vch_no: i.number,
+                    export_state: "SUCCESS",
+                    exported_at: $now
+                })
+                CREATE (i)-[:POSTED_AS]->(tv)
+                SET i.state = "POSTED"
+                """,
+                {"id": inv_id, "guid": f"vch_{inv_id}", "now": now_iso}
+            )
+            
+    return sync_result
+

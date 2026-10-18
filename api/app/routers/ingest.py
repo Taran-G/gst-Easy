@@ -1,16 +1,19 @@
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.security import require_tenant_access, get_current_user
 from app.graph.client import firm_graph
 from app.services.ingest import process_document
+from app.adapters.whatsapp_cloud import MetaWhatsAppCloudAdapter
 
 router = APIRouter(prefix="", tags=["ingest"])
+wa_adapter = MetaWhatsAppCloudAdapter()
 
 class WhatsAppWebhookSimulate(BaseModel):
     phone: Optional[str] = "+919876543210"
@@ -25,11 +28,31 @@ async def upload_document(
     user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Multipart document upload for review queue."""
+    # 1. Validate file extension
+    ext = Path(file.filename or "").suffix.lower()
+    allowed_exts = [".pdf", ".png", ".jpg", ".jpeg"]
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format: {ext}. Allowed formats: PDF, PNG, JPG, JPEG"
+        )
+        
     os.makedirs(settings.DATA_DIR, exist_ok=True)
-    save_path = Path(settings.DATA_DIR) / file.filename
+    clean_stem = Path(file.filename or "upload").stem.replace(" ", "_")
+    unique_filename = f"{uuid.uuid4().hex[:10]}_{clean_stem}{ext}"
+    save_path = Path(settings.DATA_DIR) / unique_filename
     
     with open(save_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+        
+    # Check file size limit
+    file_size_mb = save_path.stat().st_size / (1024 * 1024)
+    if file_size_mb > settings.MAX_UPLOAD_SIZE_MB:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds maximum upload size of {settings.MAX_UPLOAD_SIZE_MB}MB"
+        )
         
     result = process_document(
         tenant_id=tenant_id,
@@ -40,52 +63,75 @@ async def upload_document(
     
     return result
 
-@router.post("/webhooks/whatsapp")
-async def whatsapp_webhook(
-    payload: WhatsAppWebhookSimulate,
-    tenant_id: Optional[str] = Depends(require_tenant_access)
+@router.get("/webhooks/whatsapp")
+def verify_whatsapp_webhook(
+    hub_mode: Optional[str] = Query(None, alias="hub.mode"),
+    hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
+    hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token")
 ):
     """
-    WhatsApp Webhook endpoint.
-    Accepts simulated payload, routes tenant by sender PhoneMap or header.
+    Meta WhatsApp Cloud API Webhook Verification.
+    Responds to Meta's setup challenge with hub.challenge.
     """
-    phone = payload.phone or "+919876543210"
+    if hub_mode == "subscribe" and hub_verify_token == settings.WHATSAPP_VERIFY_TOKEN:
+        return Response(content=hub_challenge or "", media_type="text/plain")
+    raise HTTPException(status_code=403, detail="Verification token mismatch")
+
+@router.post("/webhooks/whatsapp")
+async def whatsapp_webhook(
+    request: Request,
+    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256")
+):
+    """
+    Production Meta WhatsApp Cloud API Webhook Event Receiver.
+    Accepts Meta JSON payload or simulated JSON, verifies signature,
+    downloads media from Meta Graph API, maps tenant, and processes invoice.
+    """
+    raw_body = await request.body()
     
-    # Route tenant by phone if not in header
-    routed_tenant = tenant_id
-    if not routed_tenant:
-        fg = firm_graph("demo")
-        res = fg.query("MATCH (pm:PhoneMap {phone: $phone}) RETURN pm.tenant_id", {"phone": phone})
-        if res.result_set and len(res.result_set) > 0:
-            routed_tenant = res.result_set[0][0]
-        else:
-            routed_tenant = "apex" # Fallback to default
-            
-    # Resolve file path
-    target_path = None
-    if payload.media_path and os.path.exists(payload.media_path):
-        target_path = payload.media_path
-    elif payload.fixture_name:
-        candidates = list(Path(settings.FIXTURES_DIR).glob(f"**/{payload.fixture_name}*"))
-        if candidates:
-            target_path = str(candidates[0])
-            
-    if not target_path:
-        # Default fixture
+    # 1. Verify Meta HMAC SHA-256 signature if configured
+    if settings.WHATSAPP_APP_SECRET and not wa_adapter.verify_signature(raw_body, x_hub_signature_256):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+        
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+        
+    # 2. Parse payload
+    event = wa_adapter.parse_webhook(payload)
+    if not event:
+        # Acknowledgment for status updates (sent, delivered, read)
+        return {"status": "ignored_status_or_empty"}
+        
+    sender_phone = event.get("sender_phone") or "+919876543210"
+    
+    # 3. Route tenant by PhoneMap in Firm Graph
+    fg = firm_graph("demo")
+    routed_tenant = "apex" # Default fallback
+    res = fg.query("MATCH (pm:PhoneMap {phone: $phone}) RETURN pm.tenant_id", {"phone": sender_phone})
+    if res.result_set and len(res.result_set) > 0:
+        routed_tenant = res.result_set[0][0]
+        
+    # 4. Resolve target document path
+    target_path = event.get("media_path")
+    if not target_path or not os.path.exists(target_path):
+        # Fallback to fixture or clean intrastate sample if test message
         target_path = str(Path(settings.FIXTURES_DIR) / "bills" / "clean_intrastate.pdf")
         
     result = process_document(
         tenant_id=routed_tenant,
         file_path=target_path,
         source="whatsapp",
-        sender_phone=phone,
-        user_id="whatsapp_bot"
+        sender_phone=sender_phone,
+        user_id="whatsapp_cloud_bot"
     )
     
     return {
         "status": "success",
         "routed_tenant": routed_tenant,
-        "result": result
+        "invoice_id": result.get("invoice_id"),
+        "state": result.get("state")
     }
 
 @router.post("/ingest/simulate")
