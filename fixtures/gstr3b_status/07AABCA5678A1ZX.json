@@ -1,0 +1,27 @@
+{
+  "gstin": "07AABCA5678A1ZX",
+  "legal_name": "ABC Traders",
+  "trade_name": "ABC Traders Delhi",
+  "status": "Active",
+  "filing_freq": "QRMP",
+  "filings": [
+    {
+      "period": "092026",
+      "form": "GSTR1",
+      "status": "PENDING",
+      "filed_on": null
+    },
+    {
+      "period": "092026",
+      "form": "GSTR3B",
+      "status": "PENDING",
+      "filed_on": null
+    },
+    {
+      "period": "062026",
+      "form": "GSTR3B",
+      "status": "FILED",
+      "filed_on": "2026-07-22"
+    }
+  ]
+}

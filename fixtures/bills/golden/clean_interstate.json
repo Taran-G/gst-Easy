@@ -1,0 +1,34 @@
+{
+  "supplier_name": "ABC Traders",
+  "supplier_gstin": "07AABCA5678A1ZX",
+  "buyer_name": "Apex Auto Parts",
+  "buyer_gstin": "06AAACA1234A1ZO",
+  "invoice_number": "ABC-982",
+  "invoice_date": "2026-09-12",
+  "place_of_supply": "06",
+  "lines": [
+    {
+      "description": "Bearing Units 6204",
+      "hsn_sac": "8482",
+      "qty": 100.0,
+      "uom": "PCS",
+      "rate": 200.0,
+      "taxable_value": 20000.0,
+      "gst_rate": 18.0,
+      "cgst_amount": 0.0,
+      "sgst_amount": 0.0,
+      "igst_amount": 3600.0
+    }
+  ],
+  "taxable_amount": 20000.0,
+  "cgst_amount": 0.0,
+  "sgst_amount": 0.0,
+  "igst_amount": 3600.0,
+  "round_off": 0.0,
+  "total_amount": 23600.0,
+  "confidences": {
+    "supplier_gstin": 0.97,
+    "invoice_number": 0.99,
+    "total_amount": 0.98
+  }
+}

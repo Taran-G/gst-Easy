@@ -1,0 +1,27 @@
+{
+  "gstin": "06AABCD9012D1Z6",
+  "legal_name": "Delta Fasteners",
+  "trade_name": "Delta Fasteners Haryana",
+  "status": "Suspended",
+  "filing_freq": "Monthly",
+  "filings": [
+    {
+      "period": "092026",
+      "form": "GSTR1",
+      "status": "NOT_FILED",
+      "filed_on": null
+    },
+    {
+      "period": "092026",
+      "form": "GSTR3B",
+      "status": "NOT_FILED",
+      "filed_on": null
+    },
+    {
+      "period": "082026",
+      "form": "GSTR3B",
+      "status": "NOT_FILED",
+      "filed_on": null
+    }
+  ]
+}

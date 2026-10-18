@@ -1,0 +1,27 @@
+{
+  "gstin": "06AABCS1234S1Z4",
+  "legal_name": "Sharma Steels",
+  "trade_name": "Sharma Steels Pvt Ltd",
+  "status": "Active",
+  "filing_freq": "Monthly",
+  "filings": [
+    {
+      "period": "092026",
+      "form": "GSTR1",
+      "status": "FILED",
+      "filed_on": "2026-10-10"
+    },
+    {
+      "period": "092026",
+      "form": "GSTR3B",
+      "status": "FILED",
+      "filed_on": "2026-10-18"
+    },
+    {
+      "period": "082026",
+      "form": "GSTR3B",
+      "status": "FILED",
+      "filed_on": "2026-09-19"
+    }
+  ]
+}

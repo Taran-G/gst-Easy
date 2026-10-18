@@ -1,0 +1,12 @@
+type,name,parent,uom,gst_rate
+ledger,Sharma Steels (Sundry Creditors),Sundry Creditors,,
+ledger,ABC Traders (Sundry Creditors),Sundry Creditors,,
+ledger,Delta Fasteners (Sundry Creditors),Sundry Creditors,,
+ledger,Input CGST @ 9%,Duties & Taxes,,9
+ledger,Input SGST @ 9%,Duties & Taxes,,9
+ledger,Input IGST @ 18%,Duties & Taxes,,18
+ledger,Purchase GST 18%,Purchase Accounts,,18
+stock_item,HR Steel Coil 2.5mm,Raw Materials,MT,18
+stock_item,Bearing Units 6204,Bought Out Components,PCS,18
+stock_item,CR Steel Sheet,Raw Materials,MT,18
+stock_item,Forged Connecting Rods,Raw Materials,PCS,18

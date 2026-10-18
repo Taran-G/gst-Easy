@@ -1,0 +1,34 @@
+{
+  "supplier_name": "Krishna Forge",
+  "supplier_gstin": "06AABCK9999K1ZO",
+  "buyer_name": "Apex Auto Parts",
+  "buyer_gstin": "06AAACA1234A1ZO",
+  "invoice_number": "KF-4401",
+  "invoice_date": "2026-09-18",
+  "place_of_supply": "06",
+  "lines": [
+    {
+      "description": "Forged Connecting Rods",
+      "hsn_sac": "8708",
+      "qty": 50.0,
+      "uom": "PCS",
+      "rate": 300.0,
+      "taxable_value": 15000.0,
+      "gst_rate": 18.0,
+      "cgst_amount": 1350.0,
+      "sgst_amount": 1350.0,
+      "igst_amount": 0.0
+    }
+  ],
+  "taxable_amount": 15000.0,
+  "cgst_amount": 1350.0,
+  "sgst_amount": 1350.0,
+  "igst_amount": 0.0,
+  "round_off": 0.0,
+  "total_amount": 17700.0,
+  "confidences": {
+    "supplier_gstin": 0.95,
+    "invoice_number": 0.96,
+    "total_amount": 0.98
+  }
+}
