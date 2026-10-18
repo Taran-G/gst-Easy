@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     WHATSAPP_VERIFY_TOKEN: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "ledgergraph-verify-token-2026")
     WHATSAPP_APP_SECRET: str = os.getenv("WHATSAPP_APP_SECRET", "")
     
+    # Gmail / Email Automation Settings
+    EMAIL_MODE: str = os.getenv("EMAIL_MODE", "prototype")  # prototype | live_gmail
+    EMAIL_IMAP_SERVER: str = os.getenv("EMAIL_IMAP_SERVER", "imap.gmail.com")
+    EMAIL_IMAP_PORT: int = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+    EMAIL_SMTP_SERVER: str = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+    EMAIL_SMTP_PORT: int = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+    EMAIL_USERNAME: str = os.getenv("EMAIL_USERNAME", "")
+    EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "")
+    AUTOMATION_ENABLED: bool = os.getenv("AUTOMATION_ENABLED", "true").lower() == "true"
+    AUTOMATION_INTERVAL_SECONDS: int = int(os.getenv("AUTOMATION_INTERVAL_SECONDS", "30"))
+
     # GSP Integration (GST Portal API)
     GSP_BASE_URL: str = os.getenv("GSP_BASE_URL", "https://api.gsp.nic.in")
     GSP_CLIENT_ID: str = os.getenv("GSP_CLIENT_ID", "")

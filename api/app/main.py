@@ -5,8 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.routers import auth, invoices, ingest, masters, reconcile, risk, whatsapp
+from app.routers import auth, invoices, ingest, masters, reconcile, risk, whatsapp, automation
 from app.graph.client import get_db
+from app.services.automation import agent_engine
+import asyncio
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -55,6 +57,11 @@ async def add_process_time_header(request: Request, call_next):
             headers={"X-Process-Time": f"{process_time:.4f}s"}
         )
 
+@app.on_event("startup")
+async def start_autonomous_worker():
+    """Starts the autonomous AI agent loop in the background."""
+    asyncio.create_task(agent_engine.start_background_loop())
+    logger.info("Autonomous AI Agent background loop started.")
 
 # Include All Routers under /api/v1
 app.include_router(auth.router, prefix=settings.API_V1_STR)
@@ -64,6 +71,7 @@ app.include_router(masters.router, prefix=settings.API_V1_STR)
 app.include_router(reconcile.router, prefix=settings.API_V1_STR)
 app.include_router(risk.router, prefix=settings.API_V1_STR)
 app.include_router(whatsapp.router, prefix=settings.API_V1_STR)
+app.include_router(automation.router, prefix=settings.API_V1_STR)
 
 # Serve files locally for review drawer / preview
 os.makedirs(settings.DATA_DIR, exist_ok=True)

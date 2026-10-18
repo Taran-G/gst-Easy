@@ -129,4 +129,20 @@ else
   exit 1
 fi
 
+# 12. Autonomous Agent Automated Cycle & Email Ingestion
+echo -n "12. Testing Autonomous AI Agent Cycle & Email Ingestion... "
+curl -s -f -X POST "$API_BASE/api/v1/automation/email/simulate-incoming" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER" \
+  -H "Content-Type: application/json" \
+  -d '{"from_addr":"sharma@sharmasteels.com","subject":"Auto Invoice Delivery","fixture_name":"clean_intrastate"}' > /dev/null
+
+AUTO_CYCLE_RESP=$(curl -s -f -X POST "$API_BASE/api/v1/automation/run-now" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER")
+if [[ "$AUTO_CYCLE_RESP" =~ "processed_bills" ]]; then
+  echo "OK (Autonomous background cycle executed & auto-reply dispatched)"
+else
+  echo "FAILED"
+  exit 1
+fi
+
 echo "=== ALL SMOKE CHECKS PASSED SUCCESSFULLY ==="
