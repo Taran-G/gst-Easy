@@ -101,8 +101,8 @@ export default function InboxPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchInbox = useCallback(() => {
-    setLoading(true);
+  const fetchInbox = useCallback((isBackground = false) => {
+    if (!isBackground) setLoading(true);
     const params = new URLSearchParams();
     if (tab && tab !== "all") params.set("tab", tab);
     if (statusFilter && statusFilter !== "ALL") params.set("status", statusFilter);
@@ -131,11 +131,18 @@ export default function InboxPage() {
         }
       })
       .catch((err) => console.error("Failed fetching inbox:", err))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!isBackground) setLoading(false);
+      });
   }, [tab, statusFilter, supplierFilter, itcFilter, searchQuery]);
 
   useEffect(() => {
     fetchInbox();
+    // Poll every 8 seconds in the background so incoming WhatsApp bills appear live
+    const interval = setInterval(() => {
+      fetchInbox(true);
+    }, 8000);
+    return () => clearInterval(interval);
   }, [fetchInbox]);
 
   useEffect(() => {
@@ -433,10 +440,16 @@ export default function InboxPage() {
       {/* Header and Action Toolbar */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center space-x-2">
-            <Inbox className="w-6 h-6 text-primary" />
-            <span>Purchase Bill Inbox</span>
-          </h1>
+          <div className="flex items-center space-x-3">
+            <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center space-x-2">
+              <Inbox className="w-6 h-6 text-primary" />
+              <span>Purchase Bill Inbox</span>
+            </h1>
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+              <span className="w-1.5 h-1.5 mr-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+              Live WhatsApp Sync
+            </span>
+          </div>
           <p className="text-sm text-muted">
             Incoming purchase bills from WhatsApp and file upload with deterministic math and tax checks.
           </p>
@@ -1038,13 +1051,22 @@ export default function InboxPage() {
 
             {/* Modal Actions Footer */}
             <div className="px-6 py-4 border-t border-border bg-background flex justify-between items-center">
-              <button
-                onClick={handleReject}
-                disabled={actionLoading}
-                className="px-4 py-2 border border-danger/40 text-danger hover:bg-danger-light text-sm font-semibold rounded transition-colors"
-              >
-                Reject Bill
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={handleReject}
+                  disabled={actionLoading}
+                  className="px-4 py-2 border border-danger/40 text-danger hover:bg-danger-light text-sm font-semibold rounded transition-colors"
+                >
+                  Reject Bill
+                </button>
+                <a
+                  href={`/whatsapp?phone=${encodeURIComponent("+919876543210")}`}
+                  className="px-3.5 py-2 bg-success text-white hover:bg-success/90 text-sm font-semibold rounded shadow-xs flex items-center space-x-1.5 transition-colors"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span>WhatsApp Supplier</span>
+                </a>
+              </div>
 
               <div className="flex items-center space-x-3">
                 {(selectedInvoice.state === "APPROVED" ||

@@ -14,7 +14,8 @@ import {
   Building,
   RefreshCw,
   Printer,
-  X
+  X,
+  MessageSquare
 } from "lucide-react";
 
 interface SupplierRanking {
@@ -728,19 +729,46 @@ export default function SuppliersPage() {
                   </div>
                 )}
 
-                {/* Send Button */}
-                <div className="flex items-center justify-between pt-2">
+                {/* Send Buttons */}
+                <div className="flex flex-col sm:flex-row items-center justify-between pt-2 gap-3">
                   <div className="text-[11px] text-muted">
                     Statutory audit requirement: Reminders are rate-limited to 1 per 3 days per vendor.
                   </div>
-                  <button
-                    onClick={handleSendChase}
-                    disabled={sendingChase || !chaseDraft || !chaseDraft.eligible}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-md shadow-sm transition-colors disabled:opacity-50 flex items-center space-x-1.5"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>{sendingChase ? "Sending..." : "Send WhatsApp Notice"}</span>
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!chaseDraft?.rendered_text) return;
+                        let cleanDigits = (profile.supplier.phone || "").replace(/[^0-9]/g, "");
+                        if (!cleanDigits || cleanDigits === "919876543210" || cleanDigits.length < 10) {
+                          const entered = prompt(
+                            `Enter WhatsApp phone number for supplier "${profile.supplier.legal_name}":`,
+                            ""
+                          );
+                          if (!entered || !entered.trim()) return;
+                          cleanDigits = entered.trim().replace(/[^0-9]/g, "");
+                          if (cleanDigits.length < 10) {
+                            alert("Please enter a valid 10-digit phone number.");
+                            return;
+                          }
+                        }
+                        const encoded = encodeURIComponent(chaseDraft.rendered_text);
+                        window.open(`https://wa.me/${cleanDigits}?text=${encoded}`, "_blank");
+                      }}
+                      className="px-3.5 py-2 bg-surface border border-border text-ink hover:bg-background text-xs font-semibold rounded-md shadow-xs transition-colors flex items-center space-x-1.5"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-success" />
+                      <span>Open in WhatsApp Web</span>
+                    </button>
+                    <button
+                      onClick={handleSendChase}
+                      disabled={sendingChase || !chaseDraft || !chaseDraft.eligible}
+                      className="px-4 py-2 bg-success hover:bg-success/90 text-white text-xs font-semibold rounded-md shadow-xs transition-colors disabled:opacity-50 flex items-center space-x-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{sendingChase ? "Sending..." : "Send via WhatsApp"}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </>

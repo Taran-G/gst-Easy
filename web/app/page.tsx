@@ -1,20 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { formatRupees, getActiveTenant, apiFetch } from "@/lib/api";
+import { formatRupees, getActiveTenant, apiFetch, downloadBlob, getBusinessWhatsAppPhone } from "@/lib/api";
 import {
   ArrowRight,
   AlertTriangle,
   Clock,
   Inbox,
-  Users,
-  Bot,
-  Sparkles,
-  RefreshCw,
+  MessageSquare,
   CheckCircle2,
   FileCheck,
-  Building2
+  Upload,
+  Download,
+  FileSpreadsheet
 } from "lucide-react";
 
 interface StatusCounts {
@@ -52,26 +51,11 @@ interface VendorRisk {
   risk_level: string;
 }
 
-interface AutomationLog {
-  id: string;
-  timestamp: string;
-  event: string;
-  message: string;
-  level: string;
-  details?: Record<string, unknown>;
-}
-
-interface AutomationStatus {
-  is_running: boolean;
-  interval_seconds: number;
-  cycle_count: number;
-  last_run: string | null;
-  invoices_processed_count: number;
-  alerts_generated_count: number;
-  email_mode: string;
-  email_username: string;
-  email_unread_count: number;
-  logs: AutomationLog[];
+interface WhatsAppStats {
+  total: number;
+  inbound: number;
+  outbound: number;
+  invoices_ingested: number;
 }
 
 export default function HomePage() {
@@ -81,12 +65,18 @@ export default function HomePage() {
   const [reconData, setReconData] = useState<ReconResponse | null>(null);
   const [rule37Count, setRule37Count] = useState<number>(0);
   const [highRiskVendorsCount, setHighRiskVendorsCount] = useState<number>(0);
+  const [waStats, setWaStats] = useState<WhatsAppStats | null>(null);
+  const [businessPhone, setBusinessPhone] = useState("+91 98765 43210");
 
-  // Autonomous Engine State
-  const [autoStatus, setAutoStatus] = useState<AutomationStatus | null>(null);
-  const [runningCycle, setRunningCycle] = useState(false);
-  const [triggeringTest, setTriggeringTest] = useState(false);
-  const [testSuccessMessage, setTestSuccessMessage] = useState<string | null>(null);
+  // Upload & Export State
+  const [uploadingBill, setUploadingBill] = useState(false);
+  const [uploading2B, setUploading2B] = useState(false);
+  const [exportingTally, setExportingTally] = useState(false);
+  const [exportingRecon, setExportingRecon] = useState(false);
+  const [bannerMessage, setBannerMessage] = useState<{ title: string; desc: string; type: "success" | "warning" } | null>(null);
+
+  const billInputRef = useRef<HTMLInputElement>(null);
+  const gstr2bInputRef = useRef<HTMLInputElement>(null);
 
   const fetchDashboardData = () => {
     Promise.allSettled([
@@ -94,8 +84,8 @@ export default function HomePage() {
       apiFetch<ReconResponse>("/reconcile/092026"),
       apiFetch<Rule37Alert[]>("/rules37/aging"),
       apiFetch<VendorRisk[]>("/risk/vendors"),
-      apiFetch<AutomationStatus>("/automation/status"),
-    ]).then(([invoicesRes, reconRes, rulesRes, vendorsRes, autoRes]) => {
+      apiFetch<{ stats?: WhatsAppStats }>("/whatsapp/messages?limit=1"),
+    ]).then(([invoicesRes, reconRes, rulesRes, vendorsRes, waRes]) => {
       if (invoicesRes.status === "fulfilled" && invoicesRes.value.status_counts) {
         setStatusCounts(invoicesRes.value.status_counts);
       }
@@ -109,8 +99,8 @@ export default function HomePage() {
         const highRisk = vendorsRes.value.filter((v) => v.risk_level === "High" || v.risk_level === "Medium");
         setHighRiskVendorsCount(highRisk.length);
       }
-      if (autoRes.status === "fulfilled") {
-        setAutoStatus(autoRes.value);
+      if (waRes.status === "fulfilled" && waRes.value.stats) {
+        setWaStats(waRes.value.stats);
       }
       setLoading(false);
     });
@@ -120,79 +110,137 @@ export default function HomePage() {
     const tenant = getActiveTenant();
     setActiveTenantState(tenant);
     fetchDashboardData();
+    setBusinessPhone(getBusinessWhatsAppPhone());
 
-    // Periodic live feed refresh
-    const interval = setInterval(() => {
-      apiFetch<AutomationStatus>("/automation/status")
-        .then((data) => setAutoStatus(data))
-        .catch(() => {});
-    }, 6000);
-
-    return () => clearInterval(interval);
+    const handlePhoneChange = () => setBusinessPhone(getBusinessWhatsAppPhone());
+    window.addEventListener("whatsAppPhoneChanged", handlePhoneChange);
+    return () => window.removeEventListener("whatsAppPhoneChanged", handlePhoneChange);
   }, []);
 
-  const handleRunCycleNow = async () => {
-    setRunningCycle(true);
-    setTestSuccessMessage(null);
+  // Quick Manual Bill Upload Handler
+  const handleUploadBill = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingBill(true);
+    setBannerMessage(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
     try {
-      await apiFetch("/automation/run-now", { method: "POST" });
-      const updated = await apiFetch<AutomationStatus>("/automation/status");
-      setAutoStatus(updated);
+      const res = await apiFetch<{
+        status: string;
+        invoice: { id: string; number: string; total_amount: number };
+        state: string;
+      }>("/ingest/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      setBannerMessage({
+        title: "Bill Uploaded & Extracted Successfully",
+        desc: `Invoice #${res.invoice?.number || "New"} for ₹${(res.invoice?.total_amount || 0).toLocaleString("en-IN")} was checked and added to your Inbox (${res.state}).`,
+        type: res.state === "BLOCKED" ? "warning" : "success",
+      });
+
       fetchDashboardData();
     } catch (err: unknown) {
-      console.error("Failed running autonomous cycle:", err);
+      alert("Bill upload failed: " + (err instanceof Error ? err.message : String(err)));
     } finally {
-      setRunningCycle(false);
+      setUploadingBill(false);
+      if (billInputRef.current) billInputRef.current.value = "";
     }
   };
 
-  const handleTriggerTest = async (isGstr2b: boolean, companyName: string = "Tata Steel Ltd") => {
-    setTriggeringTest(true);
-    setTestSuccessMessage(null);
-    try {
-      if (isGstr2b) {
-        await apiFetch("/automation/email/simulate-incoming", {
-          method: "POST",
-          body: JSON.stringify({
-            is_gstr2b_notification: true,
-            subject: "GST Portal: Intimation of auto-drafted ITC statement in Form GSTR-2B for period 092026",
-            body: "Form GSTR-2B for the tax period September 2026 (092026) has been generated and is available for download on the GST Portal.",
-          }),
-        });
-        setTestSuccessMessage("GSTR-2B filing notification delivered! AI Auto-Pilot triggered 2B reconciliation.");
-      } else {
-        await apiFetch("/automation/email/simulate-incoming", {
-          method: "POST",
-          body: JSON.stringify({
-            is_gstr2b_notification: false,
-            from_addr: `accounts@${companyName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com`,
-            subject: `Tax Invoice INV-2026-990 from ${companyName}`,
-            body: `Dear Accounts Team, please find tax invoice from ${companyName} attached for material supplied.`,
-            fixture_name: "clean_intrastate",
-            company_name: companyName,
-          }),
-        });
-        setTestSuccessMessage(`Tax invoice from '${companyName}' delivered! AI Auto-Pilot triggered GSTIN verification.`);
-      }
+  // Quick GSTR-2B File Upload Handler
+  const handleUpload2B = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-      // Immediately run cycle to process it
-      await apiFetch("/automation/run-now", { method: "POST" });
-      const updated = await apiFetch<AutomationStatus>("/automation/status");
-      setAutoStatus(updated);
+    setUploading2B(true);
+    setBannerMessage(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await apiFetch<{
+        status: string;
+        entries_imported: number;
+      }>("/gstr2b/upload?period=092026", {
+        method: "POST",
+        body: formData,
+      });
+
+      setBannerMessage({
+        title: "GSTR-2B Statement Uploaded",
+        desc: `Processed ${res.entries_imported} government B2B entries for September 2026. Reconciliation updated!`,
+        type: "success",
+      });
+
       fetchDashboardData();
     } catch (err: unknown) {
-      console.error("Failed triggering test notification:", err);
+      alert("GSTR-2B upload failed: " + (err instanceof Error ? err.message : String(err)));
     } finally {
-      setTriggeringTest(false);
+      setUploading2B(false);
+      if (gstr2bInputRef.current) gstr2bInputRef.current.value = "";
+    }
+  };
+
+  // Quick Download Tally XML
+  const handleDownloadTally = async () => {
+    setExportingTally(true);
+    try {
+      const invoicesRes = await apiFetch<{ invoices: Array<{ id: string; state: string }> }>("/invoices?status=ALL");
+      const readyIds = (invoicesRes.invoices || [])
+        .filter((i) => i.state === "READY_FOR_EXPORT" || i.state === "APPROVED" || i.state === "MATCHED")
+        .map((i) => i.id);
+
+      if (readyIds.length === 0) {
+        alert("No approved or matched bills available to export right now. Please review and approve bills in your Inbox first.");
+        return;
+      }
+
+      const filename = `Tally_Purchase_Vouchers_${activeTenant}_Sep2026.xml`;
+      await downloadBlob("/tally/export", filename, {
+        method: "POST",
+        body: JSON.stringify({ invoice_ids: readyIds }),
+      });
+
+      setBannerMessage({
+        title: "Tally XML Downloaded",
+        desc: `Downloaded ${readyIds.length} purchase vouchers. In TallyPrime, press Alt + O > Import > Transactions to load.`,
+        type: "success",
+      });
+    } catch (err: unknown) {
+      alert("Failed downloading Tally XML: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setExportingTally(false);
+    }
+  };
+
+  // Quick Download Reconciliation CSV
+  const handleDownloadRecon = async () => {
+    setExportingRecon(true);
+    try {
+      const filename = `GSTR2B_Reconciliation_${activeTenant}_Sep2026.csv`;
+      await downloadBlob("/reconcile/092026/export-csv", filename);
+      setBannerMessage({
+        title: "Reconciliation Report Downloaded",
+        desc: `Saved ${filename} for your audit working papers.`,
+        type: "success",
+      });
+    } catch (err: unknown) {
+      alert("Failed downloading report: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setExportingRecon(false);
     }
   };
 
   const tenantName = activeTenant === "apex" ? "Apex Auto Parts" : activeTenant;
-
-  const totalBills = statusCounts.all || 0;
   const needsReview = statusCounts.needs_review || 0;
-  const readyBills = statusCounts.ready || 0;
-  const blockedBills = statusCounts.blocked || 0;
+  const totalBills = statusCounts.all || 0;
 
   const itc = reconData?.itc_summary || {
     matched_itc: 0,
@@ -209,7 +257,7 @@ export default function HomePage() {
 
   return (
     <div className={`space-y-8 transition-opacity duration-300 ${loading ? "opacity-60 pointer-events-none" : "opacity-100"}`}>
-      {/* Calm Greeting with Real Data */}
+      {/* Calm Greeting with Plain Accounting Language */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold text-ink tracking-tight">
@@ -218,24 +266,136 @@ export default function HomePage() {
           <p className="text-muted text-sm">
             {needsReview === 0
               ? `All purchase bills reviewed. ${formatRupees(itc.at_risk_itc)} tax credit continuously monitored.`
-              : `${needsReview} ${needsReview === 1 ? "bill needs" : "bills need"} review. ${formatRupees(itc.at_risk_itc)} tax credit needs attention.`}
+              : `${needsReview} ${needsReview === 1 ? "bill needs" : "bills need"} review before posting. ${formatRupees(itc.at_risk_itc)} tax credit needs attention.`}
           </p>
         </div>
 
-        {/* Live Channel Status Chip */}
-        <div className="flex items-center space-x-2 px-3 py-1.5 bg-surface border border-border rounded-lg text-xs font-semibold text-ink shadow-sm">
+        {/* Live Channel Status Chip (WhatsApp only) */}
+        <div className="flex items-center space-x-2 px-3 py-1.5 bg-surface border border-border rounded-lg text-xs font-semibold text-ink shadow-xs">
           <span className="relative flex h-2.5 w-2.5">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-success"></span>
           </span>
-          <span>AI Auto-Pilot Monitoring Active</span>
+          <span>WhatsApp Channel Active: {businessPhone}</span>
         </div>
       </div>
 
-      {/* Real ITC Summary Bar */}
-      <div className="bg-surface border border-border rounded-xl p-5 space-y-3 shadow-sm">
+      {/* Notification Banner */}
+      {bannerMessage && (
+        <div
+          className={`p-4 rounded-xl border text-sm flex items-start justify-between shadow-xs ${
+            bannerMessage.type === "success"
+              ? "bg-success-light/60 border-success/30 text-ink"
+              : "bg-warning-light/60 border-warning/30 text-ink"
+          }`}
+        >
+          <div className="flex items-start space-x-3">
+            {bannerMessage.type === "success" ? (
+              <CheckCircle2 className="w-5 h-5 text-success shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+            )}
+            <div>
+              <div className="font-bold text-ink">{bannerMessage.title}</div>
+              <div className="text-xs text-muted mt-0.5">{bannerMessage.desc}</div>
+            </div>
+          </div>
+          <button onClick={() => setBannerMessage(null)} className="text-muted hover:text-ink text-xs font-bold ml-4">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* QUICK ACTIONS BAR: Manual Import & Export (The primary user workflow) */}
+      <div className="bg-surface border border-border rounded-2xl p-5 shadow-xs space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold text-ink uppercase tracking-wider">
+            Quick Actions · Import Bills &amp; Export Files
+          </span>
+          <span className="text-xs text-muted">Zero manual typing · 1-click downloads</span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {/* Action 1: Upload Purchase Bill */}
+          <input
+            ref={billInputRef}
+            type="file"
+            accept=".pdf,image/*"
+            onChange={handleUploadBill}
+            className="hidden"
+          />
+          <button
+            onClick={() => billInputRef.current?.click()}
+            disabled={uploadingBill}
+            className="p-3.5 bg-background border border-border hover:border-primary rounded-xl text-left transition-all hover:shadow-xs group"
+          >
+            <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-2 group-hover:bg-primary group-hover:text-white transition-colors">
+              <Upload className="w-4 h-4" />
+            </div>
+            <div className="font-bold text-xs text-ink">
+              {uploadingBill ? "Reading Bill..." : "Upload Bills"}
+            </div>
+            <div className="text-[11px] text-muted mt-0.5">PDF or Photo (AI Extract)</div>
+          </button>
+
+          {/* Action 2: Upload GSTR-2B Statement */}
+          <input
+            ref={gstr2bInputRef}
+            type="file"
+            accept=".json,.csv"
+            onChange={handleUpload2B}
+            className="hidden"
+          />
+          <button
+            onClick={() => gstr2bInputRef.current?.click()}
+            disabled={uploading2B}
+            className="p-3.5 bg-background border border-border hover:border-success rounded-xl text-left transition-all hover:shadow-xs group"
+          >
+            <div className="w-8 h-8 rounded-lg bg-success-light text-success flex items-center justify-center mb-2 group-hover:bg-success group-hover:text-white transition-colors">
+              <FileCheck className="w-4 h-4" />
+            </div>
+            <div className="font-bold text-xs text-ink">
+              {uploading2B ? "Matching..." : "Upload GSTR-2B"}
+            </div>
+            <div className="text-[11px] text-muted mt-0.5">Government JSON statement</div>
+          </button>
+
+          {/* Action 3: Download Tally XML */}
+          <button
+            onClick={handleDownloadTally}
+            disabled={exportingTally}
+            className="p-3.5 bg-background border border-border hover:border-primary rounded-xl text-left transition-all hover:shadow-xs group"
+          >
+            <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-2 group-hover:bg-primary group-hover:text-white transition-colors">
+              <Download className="w-4 h-4" />
+            </div>
+            <div className="font-bold text-xs text-ink">
+              {exportingTally ? "Generating..." : "Download for Tally"}
+            </div>
+            <div className="text-[11px] text-muted mt-0.5">TallyPrime XML (Alt+O)</div>
+          </button>
+
+          {/* Action 4: Download Reconciliation Report */}
+          <button
+            onClick={handleDownloadRecon}
+            disabled={exportingRecon}
+            className="p-3.5 bg-background border border-border hover:border-primary rounded-xl text-left transition-all hover:shadow-xs group"
+          >
+            <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-2 group-hover:bg-primary group-hover:text-white transition-colors">
+              <FileSpreadsheet className="w-4 h-4" />
+            </div>
+            <div className="font-bold text-xs text-ink">
+              {exportingRecon ? "Downloading..." : "Reconciliation Excel"}
+            </div>
+            <div className="text-[11px] text-muted mt-0.5">Audit Working Paper</div>
+          </button>
+        </div>
+      </div>
+
+      {/* ITC SUMMARY PROGRESS BAR */}
+      <div className="bg-surface border border-border rounded-2xl p-5 space-y-3 shadow-xs">
         <div className="flex justify-between items-center text-xs font-semibold uppercase tracking-wider text-muted">
-          <span>Input Tax Credit (ITC) Breakdown · Sep 2026</span>
+          <span>Tax Credit (ITC) Status · Sep 2026</span>
           <span className="text-ink font-semibold">
             Total Claimable: {formatRupees(itc.total_claimable || (itc.matched_itc + itc.at_risk_itc + itc.timing_gap_itc))}
           </span>
@@ -251,7 +411,7 @@ export default function HomePage() {
           <div
             style={{ width: `${timingPct}%` }}
             className="bg-warning transition-all duration-300"
-            title={`Pending GSTR-2B reflection (${timingPct}%)`}
+            title={`Timing Gap (${timingPct}%)`}
           />
           <div
             style={{ width: `${atRiskPct}%` }}
@@ -260,286 +420,192 @@ export default function HomePage() {
           />
         </div>
 
-        <div className="flex items-center space-x-6 text-xs pt-1">
+        {/* Legend */}
+        <div className="flex flex-wrap items-center justify-between text-xs pt-1 gap-2">
           <div className="flex items-center space-x-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-success shrink-0" />
-            <span className="text-ink font-medium">Matched 2B: {formatRupees(itc.matched_itc)}</span>
+            <span className="w-3 h-3 rounded-full bg-success"></span>
+            <span className="font-medium text-ink">
+              Safe to Claim: {formatRupees(itc.matched_itc)}
+            </span>
+            <span className="text-muted">({matchedPct}%)</span>
           </div>
+
           <div className="flex items-center space-x-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-warning shrink-0" />
-            <span className="text-ink font-medium">Pending 2B: {formatRupees(itc.timing_gap_itc)}</span>
+            <span className="w-3 h-3 rounded-full bg-warning"></span>
+            <span className="font-medium text-ink">
+              Timing / Next Month: {formatRupees(itc.timing_gap_itc)}
+            </span>
           </div>
+
           <div className="flex items-center space-x-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-danger shrink-0" />
-            <span className="text-ink font-medium">At Risk: {formatRupees(itc.at_risk_itc)}</span>
+            <span className="w-3 h-3 rounded-full bg-danger"></span>
+            <span className="font-bold text-danger">
+              Tax at Risk: {formatRupees(itc.at_risk_itc)}
+            </span>
+            <span className="text-muted">({atRiskPct}%)</span>
           </div>
         </div>
       </div>
 
-      {/* 4 Large Calm Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Card 1: To Review */}
-        <div className="bg-surface border border-border rounded-xl p-6 flex flex-col justify-between space-y-4 shadow-sm hover:border-primary/40 transition-colors">
+      {/* 4 PRIMARY WORKFLOW CARDS */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+        {/* Card 1: Review Bills */}
+        <div className="bg-surface border border-border rounded-2xl p-5 flex flex-col justify-between space-y-4 shadow-xs hover:border-primary/40 transition-colors">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <span className="text-xs font-semibold text-muted uppercase tracking-wider">Purchase Inbox</span>
-              <div className="text-3xl font-bold text-ink">{totalBills} {totalBills === 1 ? "Bill" : "Bills"}</div>
-              <p className="text-sm text-muted">
-                {readyBills} ready for approval, {blockedBills} blocked with errors.
+              <span className="text-xs font-semibold text-muted uppercase tracking-wider">Purchase Bills</span>
+              <div className="text-3xl font-bold text-ink">{needsReview} Needs Review</div>
+              <p className="text-xs text-muted">
+                {totalBills} total bills in your account.
               </p>
             </div>
-            <div className="p-3 bg-primary-light text-primary rounded-lg">
+            <div className="p-3 bg-primary/10 text-primary rounded-xl">
               <Inbox className="w-5 h-5" />
             </div>
           </div>
           <Link
             href="/inbox"
-            className="inline-flex items-center justify-between w-full px-4 py-2 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-primary-hover transition-colors"
+            className="inline-flex items-center justify-between w-full px-3.5 py-2 bg-surface border border-border text-ink hover:bg-background text-xs font-bold rounded-xl transition-colors"
           >
-            <span>Review Bills in Queue</span>
+            <span>Review Bills &amp; Approve</span>
             <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
 
         {/* Card 2: Tax Credit at Risk */}
-        <div className="bg-surface border border-border rounded-xl p-6 flex flex-col justify-between space-y-4 shadow-sm hover:border-danger/40 transition-colors">
+        <div className="bg-surface border border-border rounded-2xl p-5 flex flex-col justify-between space-y-4 shadow-xs hover:border-danger/40 transition-colors">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <span className="text-xs font-semibold text-muted uppercase tracking-wider">Tax Credit at Risk</span>
+              <span className="text-xs font-semibold text-muted uppercase tracking-wider">Tax at Risk</span>
               <div className="text-3xl font-bold text-danger">{formatRupees(itc.at_risk_itc)}</div>
-              <p className="text-sm text-muted">
-                {reconData?.counts.missing_in_2b || 0} bills missing in GSTR-2B requiring payment hold.
+              <p className="text-xs text-muted">
+                {reconData?.counts.missing_in_2b || 0} bills missing in GSTR-2B.
               </p>
             </div>
-            <div className="p-3 bg-danger-light text-danger rounded-lg">
+            <div className="p-3 bg-danger-light text-danger rounded-xl">
               <AlertTriangle className="w-5 h-5" />
             </div>
           </div>
           <Link
             href="/reconcile"
-            className="inline-flex items-center justify-between w-full px-4 py-2 bg-surface border border-border text-ink hover:bg-background text-sm font-semibold rounded-lg transition-colors"
+            className="inline-flex items-center justify-between w-full px-3.5 py-2 bg-surface border border-border text-ink hover:bg-background text-xs font-bold rounded-xl transition-colors"
           >
-            <span>Inspect 2B Reconciliation</span>
+            <span>Inspect 2B Statement Match</span>
             <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
 
-        {/* Card 3: Deadlines Coming Up */}
-        <div className="bg-surface border border-border rounded-xl p-6 flex flex-col justify-between space-y-4 shadow-sm hover:border-warning/40 transition-colors">
+        {/* Card 3: 180-Day Rule 37 Radar */}
+        <div className="bg-surface border border-border rounded-2xl p-5 flex flex-col justify-between space-y-4 shadow-xs hover:border-warning/40 transition-colors">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <span className="text-xs font-semibold text-muted uppercase tracking-wider">Statutory Deadlines</span>
+              <span className="text-xs font-semibold text-muted uppercase tracking-wider">180-Day Deadlines</span>
               <div className="text-3xl font-bold text-ink">
-                {rule37Count > 0 ? `${rule37Count} Aging Alerts` : "Rule 37 Compliant"}
+                {rule37Count > 0 ? `${rule37Count} Aging Alerts` : "All Clear"}
               </div>
-              <p className="text-sm text-muted">
+              <p className="text-xs text-muted">
                 {rule37Count > 0
-                  ? `${rule37Count} invoices approaching 180-day ITC reversal statutory cutoff.`
-                  : "Zero bills currently exceeding the 150-day aging threshold."}
+                  ? `${rule37Count} unpaid bills approaching 180-day tax reversal.`
+                  : "Zero bills exceeding 150-day limit."}
               </p>
             </div>
-            <div className="p-3 bg-warning-light text-warning rounded-lg">
+            <div className="p-3 bg-warning-light text-warning rounded-xl">
               <Clock className="w-5 h-5" />
             </div>
           </div>
           <Link
-            href="/reconcile?tab=deadlines"
-            className="inline-flex items-center justify-between w-full px-4 py-2 bg-surface border border-border text-ink hover:bg-background text-sm font-semibold rounded-lg transition-colors"
+            href="/reconcile"
+            className="inline-flex items-center justify-between w-full px-3.5 py-2 bg-surface border border-border text-ink hover:bg-background text-xs font-bold rounded-xl transition-colors"
           >
-            <span>Check Rule 37 & 37A Schedule</span>
+            <span>View Rule 37 Schedule</span>
             <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
 
-        {/* Card 4: Suppliers to Follow Up */}
-        <div className="bg-surface border border-border rounded-xl p-6 flex flex-col justify-between space-y-4 shadow-sm hover:border-primary/40 transition-colors">
+        {/* Card 4: WhatsApp Supplier Follow-ups */}
+        <div className="bg-surface border border-border rounded-2xl p-5 flex flex-col justify-between space-y-4 shadow-xs hover:border-success/40 transition-colors">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <span className="text-xs font-semibold text-muted uppercase tracking-wider">Supplier Risk & Chases</span>
+              <span className="text-xs font-semibold text-muted uppercase tracking-wider">WhatsApp Follow-ups</span>
               <div className="text-3xl font-bold text-ink">
-                {highRiskVendorsCount > 0 ? `${highRiskVendorsCount} High-Risk Vendors` : "Vendors Compliant"}
+                {highRiskVendorsCount > 0 ? `${highRiskVendorsCount} To Follow Up` : "Compliant"}
               </div>
-              <p className="text-sm text-muted">
+              <p className="text-xs text-muted">
                 {highRiskVendorsCount > 0
-                  ? `${highRiskVendorsCount} suppliers flagged with suspended GSTIN or delayed GSTR-3B filings.`
-                  : "All active suppliers in good standing with monthly tax filings."}
+                  ? `${highRiskVendorsCount} suppliers have delayed their GSTR-1 returns.`
+                  : "All suppliers in good standing."}
               </p>
             </div>
-            <div className="p-3 bg-primary-light text-primary rounded-lg">
-              <Users className="w-5 h-5" />
+            <div className="p-3 bg-success-light text-success rounded-xl">
+              <MessageSquare className="w-5 h-5" />
             </div>
           </div>
           <Link
-            href="/suppliers"
-            className="inline-flex items-center justify-between w-full px-4 py-2 bg-surface border border-border text-ink hover:bg-background text-sm font-semibold rounded-lg transition-colors"
+            href="/whatsapp"
+            className="inline-flex items-center justify-between w-full px-3.5 py-2 bg-surface border border-border text-ink hover:bg-background text-xs font-bold rounded-xl transition-colors"
           >
-            <span>View Suppliers & Compliance Advice</span>
+            <span>Open WhatsApp Center</span>
             <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
       </div>
 
-      {/* AUTONOMOUS AI AUTO-PILOT SECTION */}
-      <div className="bg-surface border border-border rounded-xl p-6 space-y-6 shadow-sm">
+      {/* WHATSAPP ASSISTANT & CHANNELS CARD (Replaces confusing developer automation section) */}
+      <div className="bg-surface border border-border rounded-2xl p-6 shadow-xs space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-border gap-4">
           <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-lg bg-primary text-white flex items-center justify-center shadow-sm">
-              <Bot className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-success text-white flex items-center justify-center shadow-xs">
+              <MessageSquare className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <h3 className="text-base font-bold text-ink">Autonomous AI Auto-Pilot</h3>
-                <span className="px-2 py-0.5 bg-success-light text-success rounded-full text-[11px] font-semibold">
-                  Live Background Engine
+                <h3 className="text-base font-bold text-ink">WhatsApp Supplier Assistant</h3>
+                <span className="px-2 py-0.5 bg-success-light text-success rounded-full text-[11px] font-bold">
+                  Active
                 </span>
               </div>
               <p className="text-xs text-muted">
-                Monitors real Gmail and WhatsApp notifications, verifies incoming bills, and triggers GSTR-2B sweeps automatically.
+                Receive bills from suppliers on WhatsApp &amp; send 1-click reminders for missing returns or payment holds.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={handleRunCycleNow}
-              disabled={runningCycle}
-              className="px-3.5 py-1.5 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary-hover transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
+          <div className="flex items-center space-x-2">
+            <Link
+              href="/whatsapp"
+              className="px-4 py-2 bg-success text-white hover:bg-success/90 text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center space-x-1.5"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${runningCycle ? "animate-spin" : ""}`} />
-              <span>{runningCycle ? "Scanning Channels..." : "Run Channel Scan Now"}</span>
-            </button>
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>Send WhatsApp to Supplier</span>
+            </Link>
 
             <Link
               href="/settings"
-              className="px-3 py-1.5 border border-border text-ink hover:bg-background text-xs font-semibold rounded-lg transition-colors"
+              className="px-3.5 py-2 border border-border text-ink hover:bg-background text-xs font-semibold rounded-xl transition-colors"
             >
-              Configure Gmail API
+              Configure WhatsApp Number
             </Link>
           </div>
         </div>
 
-        {testSuccessMessage && (
-          <div className="p-3 bg-success-light border border-success/20 text-success rounded-lg text-xs flex items-center space-x-2 animate-in fade-in-50">
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>{testSuccessMessage}</span>
-          </div>
-        )}
-
-        {/* 4 Stats Chips */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="p-3.5 bg-background border border-border rounded-lg space-y-1">
-            <div className="text-[11px] font-semibold text-muted uppercase">Ingested by AI</div>
-            <div className="text-xl font-bold text-ink">{autoStatus?.invoices_processed_count || 0} Bills</div>
-            <div className="text-[11px] text-muted">Auto-extracted & verified</div>
+        {/* 3 Simple WhatsApp Stats */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="p-4 bg-background border border-border rounded-xl space-y-1">
+            <div className="text-[11px] font-bold text-muted uppercase">Your WhatsApp Number</div>
+            <div className="text-base font-bold font-mono text-success">{businessPhone}</div>
+            <div className="text-[11px] text-muted">Give to suppliers for bill photos/PDFs</div>
           </div>
 
-          <div className="p-3.5 bg-background border border-border rounded-lg space-y-1">
-            <div className="text-[11px] font-semibold text-muted uppercase">Monitored Channels</div>
-            <div className="text-sm font-bold text-ink truncate">Gmail & WhatsApp</div>
-            <div className="text-[11px] text-muted">IMAP SSL + Webhook Active</div>
+          <div className="p-4 bg-background border border-border rounded-xl space-y-1">
+            <div className="text-[11px] font-bold text-muted uppercase">Bills Ingested Automatically</div>
+            <div className="text-xl font-bold text-ink">{waStats?.invoices_ingested || 0} Bills</div>
+            <div className="text-[11px] text-muted">Received via WhatsApp and verified</div>
           </div>
 
-          <div className="p-3.5 bg-background border border-border rounded-lg space-y-1">
-            <div className="text-[11px] font-semibold text-muted uppercase">GSTR-2B Trigger</div>
-            <div className="text-sm font-bold text-success flex items-center space-x-1">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Auto-Sync Active</span>
-            </div>
-            <div className="text-[11px] text-muted">Triggers on return notice</div>
-          </div>
-
-          <div className="p-3.5 bg-background border border-border rounded-lg space-y-1">
-            <div className="text-[11px] font-semibold text-muted uppercase">Rule 37 Radar</div>
-            <div className="text-sm font-bold text-ink">150-Day Sweeper</div>
-            <div className="text-[11px] text-muted">Runs every cycle</div>
-          </div>
-        </div>
-
-        {/* Instant Autonomous Trigger Test Bar */}
-        <div className="p-4 bg-primary-light/30 border border-primary/20 rounded-lg space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2 text-xs font-semibold text-ink">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <span>Simulate Real Autonomous Triggers:</span>
-            </div>
-            <span className="text-[11px] text-muted">Test how AI triggers on incoming company invoices or 2B notices</span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button
-              onClick={() => handleTriggerTest(false, "Tata Motors Ltd")}
-              disabled={triggeringTest}
-              className="px-3 py-1.5 bg-surface border border-border hover:border-primary text-ink text-xs font-medium rounded-md transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
-            >
-              <Building2 className="w-3.5 h-3.5 text-primary" />
-              <span>Receive Invoice from &quot;Tata Motors Ltd&quot;</span>
-            </button>
-
-            <button
-              onClick={() => handleTriggerTest(false, "Reliance Industries")}
-              disabled={triggeringTest}
-              className="px-3 py-1.5 bg-surface border border-border hover:border-primary text-ink text-xs font-medium rounded-md transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
-            >
-              <Building2 className="w-3.5 h-3.5 text-primary" />
-              <span>Receive Invoice from &quot;Reliance Industries&quot;</span>
-            </button>
-
-            <button
-              onClick={() => handleTriggerTest(true)}
-              disabled={triggeringTest}
-              className="px-3 py-1.5 bg-surface border border-success/40 hover:border-success text-ink text-xs font-medium rounded-md transition-colors shadow-sm disabled:opacity-50 flex items-center space-x-1.5"
-            >
-              <FileCheck className="w-3.5 h-3.5 text-success" />
-              <span>Receive GSTR-2B Filing Notification Email</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Live Autonomous Activity Feed */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-muted uppercase tracking-wider">
-              Live Autonomous Activity Stream
-            </span>
-            <span className="text-[11px] text-muted">Auto-refreshes every 6 seconds</span>
-          </div>
-
-          <div className="border border-border rounded-lg divide-y divide-border bg-background/50 max-h-56 overflow-y-auto">
-            {autoStatus?.logs && autoStatus.logs.length > 0 ? (
-              autoStatus.logs.slice(0, 6).map((log) => {
-                const isSuccess = log.level === "SUCCESS";
-                const isWarning = log.level === "WARNING";
-                const isError = log.level === "ERROR";
-
-                return (
-                  <div key={log.id} className="p-3 text-xs flex items-start justify-between space-x-3">
-                    <div className="flex items-start space-x-2.5">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 mt-0.5 ${
-                          isSuccess
-                            ? "bg-success-light text-success"
-                            : isWarning
-                            ? "bg-warning-light text-warning"
-                            : isError
-                            ? "bg-danger-light text-danger"
-                            : "bg-surface text-muted border border-border"
-                        }`}
-                      >
-                        {log.event.replace(/_/g, " ")}
-                      </span>
-                      <span className="text-ink leading-relaxed font-medium">{log.message}</span>
-                    </div>
-                    <span className="text-[11px] text-muted font-mono shrink-0">
-                      {new Date(log.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                    </span>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="p-4 text-center text-xs text-muted">
-                Background engine active. Waiting for incoming invoices on watched channels...
-              </div>
-            )}
+          <div className="p-4 bg-background border border-border rounded-xl space-y-1">
+            <div className="text-[11px] font-bold text-muted uppercase">Messages Logged</div>
+            <div className="text-xl font-bold text-ink">{waStats?.total || 0} Messages</div>
+            <div className="text-[11px] text-muted">Reminders and payment hold notices</div>
           </div>
         </div>
       </div>

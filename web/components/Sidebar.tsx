@@ -8,10 +8,10 @@ import { getStoredUser, UserProfile } from "@/lib/api";
 
 const NAV_ITEMS = [
   { name: "Home", href: "/", icon: Home },
-  { name: "Inbox", href: "/inbox", icon: Inbox },
-  { name: "Reconcile", href: "/reconcile", icon: FileCheck },
+  { name: "Bills Inbox", href: "/inbox", icon: Inbox },
+  { name: "2B Reconciliation", href: "/reconcile", icon: FileCheck },
   { name: "Suppliers", href: "/suppliers", icon: Users },
-  { name: "WhatsApp", href: "/whatsapp", icon: MessageSquare },
+  { name: "WhatsApp Center", href: "/whatsapp", icon: MessageSquare },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 
