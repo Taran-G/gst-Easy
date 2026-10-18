@@ -125,6 +125,67 @@ def process_document(
     
     is_duplicate_inv = resolution["is_duplicate"]
     
+    # If the invoice already exists in this tenant's graph, link document to existing invoice without creating duplicate Invoice node
+    if is_duplicate_inv:
+        res_existing = g.query(
+            """
+            MATCH (v:Vendor {gstin: $supp_gstin})-[:ISSUED]->(i:Invoice {number_norm: $norm_inv_no, fy: $fy})
+            RETURN i.id, i.state, i.total, i.taxable, i.cgst, i.sgst, i.igst, i.issues_json
+            """,
+            {"supp_gstin": extraction.supplier_gstin, "norm_inv_no": norm_inv_no, "fy": fy}
+        )
+        if res_existing.result_set and len(res_existing.result_set) > 0:
+            existing_row = res_existing.result_set[0]
+            existing_id = existing_row[0]
+            existing_state = existing_row[1]
+            
+            # Connect the new document node to the existing invoice
+            g.query(
+                """
+                MATCH (d:Document {id: $doc_id}), (i:Invoice {id: $existing_id})
+                MERGE (d)-[:SOURCE_OF]->(i)
+                SET d.state = "DUPLICATE_SUBMISSION"
+                """,
+                {"doc_id": doc_id, "existing_id": existing_id}
+            )
+            
+            record_audit_event(
+                tenant_id=tenant_id,
+                firm_id=None,
+                event_type="DUPLICATE_SUBMISSION_REJECTED",
+                user_id=user_id,
+                payload={
+                    "doc_id": doc_id,
+                    "existing_invoice_id": existing_id,
+                    "invoice_number": extraction.invoice_number,
+                    "supplier_gstin": extraction.supplier_gstin,
+                    "fy": fy
+                }
+            )
+            
+            issues_list = []
+            if existing_row[7]:
+                try:
+                    issues_list = json.loads(existing_row[7])
+                except Exception:
+                    pass
+            
+            return {
+                "invoice_id": existing_id,
+                "doc_id": doc_id,
+                "state": existing_state,
+                "is_duplicate": True,
+                "is_valid": (existing_state in ["READY", "APPROVED", "POSTED"]),
+                "taxable_amount": existing_row[3],
+                "cgst_amount": existing_row[4],
+                "sgst_amount": existing_row[5],
+                "igst_amount": existing_row[6],
+                "total_amount": existing_row[2],
+                "lines": [],
+                "validation_issues": issues_list,
+                "message": f"Invoice '{extraction.invoice_number}' from {extraction.supplier_name} already exists in the inbox. Existing record retained without duplication."
+            }
+
     # 4. Deterministic validation
     val_report = validate_invoice(extracted_dict, tenant_info, is_duplicate=is_duplicate_inv)
     
@@ -268,8 +329,16 @@ def process_document(
         "doc_id": doc_id,
         "supplier_name": extraction.supplier_name,
         "invoice_number": extraction.invoice_number,
+        "taxable_amount": extraction.taxable_amount,
+        "cgst_amount": extraction.cgst_amount,
+        "sgst_amount": extraction.sgst_amount,
+        "igst_amount": extraction.igst_amount,
+        "round_off": extraction.round_off,
+        "lines": [l.model_dump() for l in extraction.lines],
         "total_amount": extraction.total_amount,
         "state": inv_state,
+        "is_valid": val_report.is_valid,
         "validation": val_report.model_dump(),
+        "validation_issues": [i.model_dump() for i in val_report.issues],
         "resolution": resolution
     }

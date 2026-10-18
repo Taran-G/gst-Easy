@@ -13,6 +13,7 @@ validation:
 rules:
   rule_37:
     statutory_days: 180
+    warning_days: 150
     alert_days: [120, 150, 170]
   rule_37a:
     reversal_cut_off_month: 11 # 30th November of subsequent FY

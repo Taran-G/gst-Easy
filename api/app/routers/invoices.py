@@ -30,23 +30,47 @@ class RejectRequest(BaseModel):
 @router.get("")
 def list_inbox(
     tab: str = Query("all", description="needs_review | blocked | ready | approved | all"),
+    status: Optional[str] = Query(None, description="READY | BLOCKED | MASTER_REQUEST | APPROVED | ALL"),
+    supplier_gstin: Optional[str] = Query(None),
+    itc_status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     tenant_id: str = Depends(require_tenant_access),
     user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Returns the Inbox list with items grouped or filtered by state.
+    Returns the Inbox list with multi-criteria filtering by tab, status, supplier, ITC, and search query.
     """
     g = tenant_graph(tenant_id)
     
-    where_clause = ""
+    conditions = []
+    params = {}
+    
     if tab == "needs_review":
-        where_clause = "WHERE i.state IN ['DRAFT', 'MASTER_REQUEST', 'BLOCKED']"
+        conditions.append("i.state IN ['DRAFT', 'MASTER_REQUEST', 'BLOCKED']")
     elif tab == "blocked":
-        where_clause = "WHERE i.state = 'BLOCKED'"
+        conditions.append("i.state = 'BLOCKED'")
     elif tab == "ready":
-        where_clause = "WHERE i.state = 'READY'"
+        conditions.append("i.state = 'READY'")
     elif tab == "approved":
-        where_clause = "WHERE i.state IN ['APPROVED', 'EXPORTED', 'POSTED']"
+        conditions.append("i.state IN ['APPROVED', 'EXPORTED', 'POSTED']")
+        
+    if status and status != "ALL":
+        conditions.append("i.state = $status")
+        params["status"] = status
+        
+    if supplier_gstin and supplier_gstin != "ALL":
+        conditions.append("v.gstin = $supp_gstin")
+        params["supp_gstin"] = supplier_gstin
+        
+    if itc_status and itc_status != "ALL":
+        conditions.append("i.itc_status = $itc_status")
+        params["itc_status"] = itc_status
+        
+    if search and search.strip():
+        conditions.append("(toLower(i.number) CONTAINS toLower($search) OR toLower(v.legal_name) CONTAINS toLower($search) OR toLower(v.gstin) CONTAINS toLower($search))")
+        params["search"] = search.strip()
+        
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         
     cypher = f"""
     MATCH (v:Vendor)-[:ISSUED]->(i:Invoice)
@@ -55,13 +79,19 @@ def list_inbox(
     OPTIONAL MATCH (i)-[:HAS_LINE]->(l:InvoiceLine)
     RETURN i.id, i.number, i.date, i.total, i.taxable, i.cgst, i.sgst, i.igst,
            i.state, i.itc_status, i.hold_status, v.gstin, v.legal_name,
-           d.id AS doc_id, d.source, i.issues_json, count(l) AS line_count
+           head(collect(d.id)) AS doc_id, head(collect(d.source)) AS source, i.issues_json, count(l) AS line_count
     ORDER BY i.date DESC
     """
     
-    res = g.query(cypher)
+    res = g.query(cypher, params)
     invoices = []
+    seen_ids = set()
     for r in res.result_set:
+        inv_id = r[0]
+        if inv_id in seen_ids:
+            continue
+        seen_ids.add(inv_id)
+        
         issues = []
         if r[15]:
             try:
@@ -70,7 +100,7 @@ def list_inbox(
                 issues = []
                 
         invoices.append({
-            "id": r[0],
+            "id": inv_id,
             "number": r[1],
             "date": r[2],
             "total_amount": r[3],
@@ -89,11 +119,46 @@ def list_inbox(
             "line_count": r[16]
         })
         
+    # Available suppliers for dropdown
+    supp_res = g.query(
+        """
+        MATCH (v:Vendor)-[:ISSUED]->(i:Invoice)
+        RETURN v.gstin, v.legal_name, count(i) AS bill_count
+        ORDER BY bill_count DESC
+        """
+    )
+    available_suppliers = [
+        {"gstin": r[0], "legal_name": r[1] or r[0], "bill_count": int(r[2])}
+        for r in supp_res.result_set
+    ]
+    
+    # Status count metrics
+    cnt_res = g.query(
+        """
+        MATCH (i:Invoice)
+        RETURN count(i) AS total,
+               sum(CASE WHEN i.state IN ['DRAFT', 'MASTER_REQUEST', 'BLOCKED'] THEN 1 ELSE 0 END) AS needs_review,
+               sum(CASE WHEN i.state = 'READY' THEN 1 ELSE 0 END) AS ready,
+               sum(CASE WHEN i.state = 'BLOCKED' THEN 1 ELSE 0 END) AS blocked,
+               sum(CASE WHEN i.state IN ['APPROVED', 'EXPORTED', 'POSTED'] THEN 1 ELSE 0 END) AS approved
+        """
+    )
+    counts_row = cnt_res.result_set[0] if cnt_res.result_set else [0, 0, 0, 0, 0]
+    status_counts = {
+        "all": int(counts_row[0] or 0),
+        "needs_review": int(counts_row[1] or 0),
+        "ready": int(counts_row[2] or 0),
+        "blocked": int(counts_row[3] or 0),
+        "approved": int(counts_row[4] or 0)
+    }
+        
     return {
         "tenant_id": tenant_id,
         "tab": tab,
         "count": len(invoices),
-        "invoices": invoices
+        "invoices": invoices,
+        "available_suppliers": available_suppliers,
+        "status_counts": status_counts
     }
 
 @router.get("/{invoice_id}")
@@ -386,3 +451,73 @@ def reject_invoice(
     )
     
     return {"status": "rejected", "invoice_id": invoice_id, "state": "REJECTED"}
+
+class BulkApproveRequest(BaseModel):
+    invoice_ids: List[str]
+
+@router.post("/bulk-approve")
+def bulk_approve_invoices(
+    req: BulkApproveRequest,
+    tenant_id: str = Depends(require_tenant_access),
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Approves all eligible invoices in a batch, skipping invoices with validation blocks
+    or unmapped supplier master requests.
+    """
+    g = tenant_graph(tenant_id)
+    approved = []
+    skipped = []
+    
+    for inv_id in req.invoice_ids:
+        try:
+            inv = get_invoice_detail(inv_id, tenant_id, user)
+            if inv["state"] == "BLOCKED":
+                skipped.append({"id": inv_id, "reason": "Invoice has blocking issues"})
+                continue
+            if inv["state"] == "MASTER_REQUEST":
+                skipped.append({"id": inv_id, "reason": "Supplier requires Tally ledger mapping"})
+                continue
+            if inv["state"] in ["APPROVED", "EXPORTED", "POSTED"]:
+                approved.append(inv_id)
+                continue
+                
+            now_iso = datetime.now(timezone.utc).isoformat()
+            app_id = f"appr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{inv_id[:6]}"
+            g.query(
+                """
+                MATCH (i:Invoice {id: $id})
+                CREATE (a:Approval {
+                    id: $app_id,
+                    user: $user,
+                    action: "APPROVE",
+                    at: $now
+                })
+                CREATE (i)-[:APPROVED_BY]->(a)
+                SET i.state = "APPROVED"
+                """,
+                {
+                    "id": inv_id,
+                    "app_id": app_id,
+                    "user": user.get("email", "CA Partner"),
+                    "now": now_iso
+                }
+            )
+            record_audit_event(
+                tenant_id=tenant_id,
+                firm_id=None,
+                event_type="APPROVE",
+                user_id=user.get("email", "unknown"),
+                payload={"invoice_id": inv_id, "amount": inv["total_amount"]}
+            )
+            approved.append(inv_id)
+        except Exception as e:
+            skipped.append({"id": inv_id, "reason": str(e)})
+            
+    return {
+        "status": "success",
+        "approved_count": len(approved),
+        "approved_ids": approved,
+        "skipped_count": len(skipped),
+        "skipped": skipped
+    }

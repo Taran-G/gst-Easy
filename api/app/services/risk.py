@@ -144,6 +144,8 @@ def check_rule_37_aging(tenant_id: str, today_date: Optional[date] = None) -> Li
     today = today_date or date(2026, 10, 18)
     rules = get_rules()
     alert_days_set = rules.rule_37_alert_days # [120, 150, 170]
+    warning_threshold = rules.rule_37_warning_days
+    statutory_days = rules.rule_37_statutory_days
     
     q_res = query(g, "rule37_aging.cypher")
     alerts = []
@@ -157,10 +159,10 @@ def check_rule_37_aging(tenant_id: str, today_date: Optional[date] = None) -> Li
             continue
             
         if age_days >= 120:
-            severity = "DANGER" if age_days >= 170 else ("WARNING" if age_days >= 150 else "INFO")
+            severity = "DANGER" if age_days >= 170 else ("WARNING" if age_days >= warning_threshold else "INFO")
             msg = (
                 f"Invoice #{inv_number} ({vendor_name}) is {age_days} days unpaid. "
-                f"Statutory reversal of ₹{float(tax):.2f} required under Rule 37 after 180 days."
+                f"Statutory reversal of ₹{float(tax):.2f} required under Rule 37 after {statutory_days} days."
             )
             alerts.append({
                 "invoice_id": inv_id,
@@ -175,8 +177,8 @@ def check_rule_37_aging(tenant_id: str, today_date: Optional[date] = None) -> Li
                 "message": msg
             })
             
-            # Create Task in graph if >= 150 days
-            if age_days >= 150:
+            # Create Task in graph if >= warning_threshold
+            if age_days >= warning_threshold:
                 task_id = f"task_r37_{inv_id}"
                 g.query(
                     """
@@ -235,6 +237,7 @@ def calculate_vendor_risk_ranking(tenant_id: str, top_n: int = 10) -> List[Dict[
         OPTIONAL MATCH (v)-[:HAS_STATUS]->(fs:FilingStatus {form: 'GSTR3B'})
         RETURN v.gstin, v.legal_name, v.gstin_status, v.filing_freq,
                sum(i.cgst + i.sgst + i.igst) AS total_itc,
+               sum(i.total) AS total_spend,
                count(i) AS invoice_count,
                collect(fs.status) AS filing_statuses
         """
@@ -242,8 +245,9 @@ def calculate_vendor_risk_ranking(tenant_id: str, top_n: int = 10) -> List[Dict[
     
     ranking = []
     for r in v_res.result_set:
-        gstin, name, g_status, freq, total_itc, inv_count, f_statuses = r
+        gstin, name, g_status, freq, total_itc, total_spend, inv_count, f_statuses = r
         total_itc = float(total_itc or 0.0)
+        total_spend = float(total_spend or 0.0)
         inv_count = int(inv_count or 0)
         
         pr_score = pagerank_scores.get(gstin, 0.15)
@@ -273,8 +277,218 @@ def calculate_vendor_risk_ranking(tenant_id: str, top_n: int = 10) -> List[Dict[
             "pagerank_score": pr_score,
             "total_itc_at_risk": total_itc if (status_penalty > 0 or filing_penalty > 0) else 0.0,
             "total_itc": total_itc,
+            "total_spend": total_spend,
             "invoice_count": inv_count
         })
         
     ranking.sort(key=lambda x: x["risk_score"], reverse=True)
     return ranking[:top_n]
+
+def get_vendor_accounting_profile(tenant_id: str, gstin: str, today_date: Optional[date] = None) -> Dict[str, Any]:
+    """
+    Returns the complete accounting risk profile for a supplier:
+    1. Supplier Master & Ledger mapping details
+    2. Real invoices from inbox and graph
+    3. Hold advice (safe base release vs GST hold)
+    4. Rule 37 180-day aging status
+    5. GSTR-1 / GSTR-3B filing history
+    6. Specific statutory accounting risk notices
+    """
+    g = tenant_graph(tenant_id)
+    today = today_date or date(2026, 10, 18)
+    
+    # 1. Fetch Vendor & Tally Ledger
+    v_res = g.query(
+        """
+        MATCH (v:Vendor {gstin: $gstin})
+        OPTIONAL MATCH (v)-[:MAPS_TO_LEDGER]->(tl:TallyLedger)
+        RETURN v.gstin, v.legal_name, v.trade_name, v.state_code, v.gstin_status,
+               v.filing_freq, v.phone, v.risk_score, v.opted_out, tl.name
+        """,
+        {"gstin": gstin}
+    )
+    if not v_res.result_set or len(v_res.result_set) == 0:
+        raise ValueError(f"Supplier with GSTIN '{gstin}' not found")
+        
+    v_row = v_res.result_set[0]
+    supplier_info = {
+        "gstin": v_row[0],
+        "legal_name": v_row[1] or "Unknown Supplier",
+        "trade_name": v_row[2] or v_row[1],
+        "state_code": v_row[3] or gstin[:2],
+        "gstin_status": v_row[4] or "Active",
+        "filing_freq": v_row[5] or "Monthly",
+        "phone": v_row[6] or "+919876543210",
+        "risk_score": float(v_row[7] or 0.1),
+        "opted_out": bool(v_row[8]),
+        "tally_ledger": v_row[9]
+    }
+    supplier_info["risk_level"] = "High" if supplier_info["risk_score"] >= 0.6 else ("Medium" if supplier_info["risk_score"] >= 0.35 else "Low")
+    
+    # 2. Fetch Invoices from inbox/graph
+    inv_res = g.query(
+        """
+        MATCH (v:Vendor {gstin: $gstin})-[:ISSUED]->(i:Invoice)
+        OPTIONAL MATCH (i)-[:MATCHED_TO]->(entry:GSTR2BEntry)
+        RETURN i.id, i.number, i.date, i.taxable, i.cgst, i.sgst, i.igst, i.total,
+               i.state, i.itc_status, i.hold_status, entry.status
+        ORDER BY i.date DESC
+        """,
+        {"gstin": gstin}
+    )
+    
+    invoices = []
+    total_taxable = 0.0
+    total_itc = 0.0
+    total_spend = 0.0
+    itc_in_2b = 0.0
+    itc_missing_2b = 0.0
+    safe_to_release = 0.0
+    hold_advised = 0.0
+    rule_37_invoices = []
+    
+    for r in inv_res.result_set:
+        inv_id, num, inv_date_str, taxable, cgst, sgst, igst, total, state, itc_status, hold_status, entry_status = r
+        taxable_f = float(taxable or 0.0)
+        tax_f = float((cgst or 0.0) + (sgst or 0.0) + (igst or 0.0))
+        total_f = float(total or 0.0)
+        
+        total_taxable += taxable_f
+        total_itc += tax_f
+        total_spend += total_f
+        
+        # Calculate age days
+        try:
+            inv_date = datetime.strptime(inv_date_str[:10], "%Y-%m-%d").date()
+            age_days = (today - inv_date).days
+        except Exception:
+            age_days = 0
+            
+        in_2b = (itc_status == "ELIGIBLE_IN_2B" or bool(entry_status))
+        if in_2b:
+            itc_in_2b += tax_f
+        else:
+            itc_missing_2b += tax_f
+            
+        # Hold advice per invoice
+        if supplier_info["gstin_status"] in ["Suspended", "Cancelled"]:
+            hold_amt = total_f
+            rel_amt = 0.0
+        elif not in_2b:
+            hold_amt = tax_f
+            rel_amt = taxable_f
+        else:
+            hold_amt = 0.0
+            rel_amt = total_f
+            
+        hold_advised += hold_amt
+        safe_to_release += rel_amt
+        
+        is_r37 = age_days >= 120 and state not in ["REVERSED"]
+        if is_r37:
+            rule_37_invoices.append({
+                "invoice_id": inv_id,
+                "invoice_number": num,
+                "invoice_date": inv_date_str,
+                "age_days": age_days,
+                "tax_at_stake": tax_f,
+                "total_amount": total_f,
+                "days_remaining": max(0, 180 - age_days)
+            })
+            
+        invoices.append({
+            "id": inv_id,
+            "number": num,
+            "date": inv_date_str,
+            "taxable_amount": taxable_f,
+            "tax_amount": tax_f,
+            "total_amount": total_f,
+            "state": state,
+            "itc_status": "ELIGIBLE_IN_2B" if in_2b else "ELIGIBLE_PENDING_2B",
+            "in_2b": in_2b,
+            "hold_advice": "HOLD_GST" if hold_amt > 0 else "RELEASE_FULL",
+            "recommended_hold": hold_amt,
+            "recommended_release": rel_amt,
+            "age_days": age_days,
+            "is_rule37_risk": is_r37
+        })
+
+    # 3. Filing History
+    f_res = g.query(
+        """
+        MATCH (v:Vendor {gstin: $gstin})-[:HAS_STATUS]->(fs:FilingStatus)
+        RETURN fs.form, fs.period, fs.status, fs.filed_on
+        ORDER BY fs.period DESC, fs.form ASC
+        """,
+        {"gstin": gstin}
+    )
+    filings = []
+    for f in f_res.result_set:
+        filings.append({
+            "form": f[0],
+            "period": f[1],
+            "status": f[2],
+            "filed_on": f[3]
+        })
+        
+    # 4. Synthesize Statutory Accounting Risks
+    accounting_risks = []
+    if supplier_info["gstin_status"] in ["Suspended", "Cancelled"]:
+        accounting_risks.append({
+            "type": "REGISTRATION_SUSPENDED",
+            "severity": "CRITICAL",
+            "title": f"Supplier GSTIN {supplier_info['gstin_status']}",
+            "description": f"GSTIN registration is marked {supplier_info['gstin_status']} on the GST portal. Immediate 100% hold on all payments recommended under Section 16(2) of the CGST Act.",
+            "statutory_ref": "Section 16(2)(c) CGST Act"
+        })
+        
+    if itc_missing_2b > 0:
+        missing_count = sum(1 for inv in invoices if not inv["in_2b"])
+        accounting_risks.append({
+            "type": "MISSING_IN_GSTR2B",
+            "severity": "WARNING",
+            "title": f"{missing_count} Invoice(s) Missing in GSTR-2B (₹{itc_missing_2b:.2f} ITC at Stake)",
+            "description": f"Tax credit of ₹{itc_missing_2b:.2f} has not been reflected in auto-drafted GSTR-2B. Advise holding the GST component of payment until supplier files GSTR-1.",
+            "statutory_ref": "Section 16(2)(aa) CGST Act & Rule 36(4)"
+        })
+        
+    if rule_37_invoices:
+        oldest_age = max(inv["age_days"] for inv in rule_37_invoices)
+        r37_tax_sum = sum(inv["tax_at_stake"] for inv in rule_37_invoices)
+        accounting_risks.append({
+            "type": "RULE_37_AGING",
+            "severity": "DANGER" if oldest_age >= 170 else "WARNING",
+            "title": f"Rule 37 180-Day Aging: {len(rule_37_invoices)} Unpaid Bill(s) (Oldest: {oldest_age} days)",
+            "description": f"Second proviso to Section 16(2) requires ITC reversal of ₹{r37_tax_sum:.2f} with 18% p.a. interest under Section 50 if payment is not cleared within 180 days.",
+            "statutory_ref": "Rule 37 CGST Rules & Section 50 Interest"
+        })
+
+    # Non-filing risk (GSTR-3B)
+    not_filed_3b = [f for f in filings if f["form"] == "GSTR3B" and f["status"] == "NOT_FILED"]
+    if not_filed_3b:
+        accounting_risks.append({
+            "type": "GSTR3B_NOT_FILED",
+            "severity": "WARNING",
+            "title": f"GSTR-3B Pending for {len(not_filed_3b)} Period(s)",
+            "description": f"Supplier has not filed GSTR-3B for periods: {', '.join(f['period'] for f in not_filed_3b)}. Under Rule 37A, recipient must reverse ITC if return is not filed by 30th November.",
+            "statutory_ref": "Rule 37A CGST Rules"
+        })
+
+    return {
+        "supplier": supplier_info,
+        "stats": {
+            "total_invoices": len(invoices),
+            "total_spend": round(total_spend, 2),
+            "total_taxable": round(total_taxable, 2),
+            "total_itc": round(total_itc, 2),
+            "itc_in_2b": round(itc_in_2b, 2),
+            "itc_missing_2b": round(itc_missing_2b, 2),
+            "hold_advised": round(hold_advised, 2),
+            "safe_to_release": round(safe_to_release, 2)
+        },
+        "invoices": invoices,
+        "filing_history": filings,
+        "accounting_risks": accounting_risks,
+        "rule_37_invoices": rule_37_invoices
+    }
+

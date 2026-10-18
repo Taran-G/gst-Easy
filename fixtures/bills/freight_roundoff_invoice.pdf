@@ -1,0 +1,13 @@
+TAX INVOICE
+Supplier: ABC Traders (GSTIN: 07AABCA5678A1ZX)
+Buyer: Apex Auto Parts (GSTIN: 06AAACA1234A1ZO)
+Invoice No: ABC-2026-FR09  Date: 2026-09-20
+Place of Supply: 06 (Haryana - Interstate)
+
+Line 1: Bearing Units 6204 | HSN: 8482 | Qty: 100 PCS | Taxable: 18450.40 | IGST (18%): 3321.07
+Line 2: Freight & Delivery Charges | SAC: 9965 | Qty: 1 JOB | Taxable: 1500.00 | IGST (18%): 270.00
+
+Taxable Subtotal: Rs. 19950.40
+Total IGST (18%): Rs. 3591.07
+Round-off: Rs. -0.47
+Grand Total: Rs. 23541.00

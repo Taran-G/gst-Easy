@@ -1,0 +1,14 @@
+TAX INVOICE
+Supplier: Sharma Steels (GSTIN: 06AABCS1234S1Z4)
+Buyer: Apex Auto Parts (GSTIN: 06AAACA1234A1ZO)
+Invoice No: INV-2026-MR01  Date: 2026-09-18
+Place of Supply: 06 (Haryana)
+
+Item 1: HR Steel Coil 2.5mm | HSN: 7208 | Qty: 5 MT @ 5000 | Taxable: 25000.00 | GST: 18% (CGST: 2250, SGST: 2250)
+Item 2: CR Steel Sheet | HSN: 7209 | Qty: 3 MT @ 5000 | Taxable: 15000.00 | GST: 12% (CGST: 900, SGST: 900)
+
+Total Taxable: Rs. 40000.00
+CGST Total: Rs. 3150.00
+SGST Total: Rs. 3150.00
+IGST Total: Rs. 0.00
+Grand Total: Rs. 46300.00

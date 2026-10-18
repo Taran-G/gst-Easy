@@ -1,7 +1,9 @@
+import csv
+import io
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel
 
 from datetime import datetime, timezone
@@ -16,6 +18,53 @@ router = APIRouter(prefix="", tags=["reconcile"])
 
 gsp_adapter = LiveGspAdapter()
 tally_bridge = TallyHttpBridge()
+
+def parse_gstr2b_uploaded_data(raw_data: Any, period: str) -> List[Dict[str, Any]]:
+    entries = []
+    
+    # Format 1: GST Portal JSON format: { "data": { "docdata": { "b2b": [ { "ctin": ..., "cname": ..., "inv": [...] } ] } } }
+    if isinstance(raw_data, dict):
+        b2b_list = None
+        if "data" in raw_data and isinstance(raw_data["data"], dict):
+            docdata = raw_data["data"].get("docdata", {})
+            b2b_list = docdata.get("b2b", [])
+        elif "docdata" in raw_data and isinstance(raw_data["docdata"], dict):
+            b2b_list = raw_data["docdata"].get("b2b", [])
+        elif "b2b" in raw_data:
+            b2b_list = raw_data["b2b"]
+            
+        if b2b_list is not None:
+            for vendor in b2b_list:
+                ctin = vendor.get("ctin") or vendor.get("supplier_gstin", "")
+                cname = vendor.get("cname") or vendor.get("supplier_name", "Vendor")
+                for inv in vendor.get("inv", []):
+                    inum = inv.get("inum") or inv.get("invoice_number", "")
+                    items = inv.get("items", [])
+                    taxable = sum(float(item.get("txval", 0.0)) for item in items) if items else float(inv.get("val", 0.0))
+                    tax = sum(
+                        float(item.get("camt", 0.0)) + float(item.get("samt", 0.0)) + float(item.get("iamt", 0.0))
+                        for item in items
+                    ) if items else 0.0
+                    
+                    entries.append({
+                        "supplier_gstin": ctin,
+                        "supplier_name": cname,
+                        "invoice_number": inum,
+                        "taxable": taxable,
+                        "tax": tax,
+                        "ims_action": inv.get("itcavl", "Y")
+                    })
+            return entries
+            
+        # Format 2: Dict with "entries" list
+        if "entries" in raw_data and isinstance(raw_data["entries"], list):
+            return raw_data["entries"]
+
+    # Format 3: Raw list of invoice entries
+    if isinstance(raw_data, list):
+        return raw_data
+
+    return entries
 
 class TallyExportRequest(BaseModel):
     invoice_ids: List[str]
@@ -33,6 +82,91 @@ def import_gstr2b(
         
     count = import_gstr2b_entries(tenant_id, period, entries)
     return {"status": "success", "period": period, "entries_imported": count}
+
+@router.post("/gstr2b/upload")
+async def upload_gstr2b(
+    file: UploadFile = File(...),
+    period: str = Query("092026"),
+    tenant_id: str = Depends(require_tenant_access),
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Accepts an uploaded GSTR-2B file (JSON exported from GST portal or custom list)
+    and loads entries directly into the tenant's reconciliation graph.
+    """
+    content = await file.read()
+    try:
+        raw_json = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON format. Please upload a valid GSTR-2B JSON file.")
+        
+    entries = parse_gstr2b_uploaded_data(raw_json, period)
+    if not entries:
+        raise HTTPException(status_code=400, detail="Could not extract any B2B invoice entries from uploaded file.")
+        
+    count = import_gstr2b_entries(tenant_id, period, entries)
+    return {"status": "success", "period": period, "entries_imported": count}
+
+@router.get("/reconcile/{period}/export-csv")
+def export_reconciliation_csv(
+    period: str,
+    tenant_id: str = Depends(require_tenant_access),
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Generates a multi-section CSV audit working paper of the GSTR-2B reconciliation.
+    """
+    res = run_reconciliation(tenant_id, period)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Title & Metadata
+    writer.writerow(["LEDGERGRAPH GSTR-2B RECONCILIATION REPORT"])
+    writer.writerow(["Client Tenant:", tenant_id])
+    writer.writerow(["Tax Period:", period])
+    writer.writerow(["Generated At (UTC):", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")])
+    writer.writerow([])
+    
+    # Summary
+    itc = res["itc_summary"]
+    writer.writerow(["--- ITC SUMMARY (INR) ---"])
+    writer.writerow(["Matched ITC", itc["matched_itc"]])
+    writer.writerow(["At-Risk ITC (Missing in 2B)", itc["at_risk_itc"]])
+    writer.writerow(["Timing Gap ITC (QRMP Suppliers)", itc["timing_gap_itc"]])
+    writer.writerow(["Total Claimable ITC", itc["total_claimable"]])
+    writer.writerow([])
+    
+    # Sections
+    sections = [
+        ("MATCHED INVOICES (Books & GSTR-2B)", res.get("matched", [])),
+        ("MISSING IN GSTR-2B (Payment Hold Advised)", res.get("missing_in_2b", [])),
+        ("EXPECTED TIMING GAP (QRMP Suppliers)", res.get("expected_timing_gap", [])),
+        ("IN GSTR-2B NOT IN BOOKS (Ghost Invoices)", res.get("in_2b_not_in_books", [])),
+    ]
+    
+    for section_title, rows in sections:
+        writer.writerow([f"=== {section_title} ({len(rows)} entries) ==="])
+        writer.writerow(["Supplier Name", "Supplier GSTIN", "Invoice #", "Books Taxable", "Books Tax", "2B Taxable", "2B Tax", "Status", "Compliance Advice"])
+        for r in rows:
+            writer.writerow([
+                r.get("supplier_name", ""),
+                r.get("supplier_gstin", ""),
+                r.get("invoice_number", ""),
+                r.get("books_taxable", 0.0),
+                r.get("books_tax", 0.0),
+                r.get("gstr2b_taxable", 0.0),
+                r.get("gstr2b_tax", 0.0),
+                r.get("status", ""),
+                r.get("advice", "")
+            ])
+        writer.writerow([])
+        
+    csv_bytes = output.getvalue().encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=GSTR2B_Reconciliation_{tenant_id}_{period}.csv"}
+    )
 
 @router.post("/reconcile/{period}")
 def trigger_reconciliation(

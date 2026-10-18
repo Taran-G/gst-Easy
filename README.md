@@ -239,11 +239,19 @@ make up
 # 3. Seed demo firm, users, and tenants
 make demo
 
-# 4. Run automated test suite (30 unit & integration tests)
+# 4. Run automated test suite (47 unit, integration & production tests)
 make test
 ```
 
-### Running the Full Application
+### Running the Application
+
+#### Option A: One-Command Docker Deployment (Production)
+```bash
+docker compose up -d --build
+# See DEPLOY.md for comprehensive production deployment options
+```
+
+#### Option B: Local Bare-Metal Services
 ```bash
 # Terminal 1: Run Backend API (FastAPI)
 make api
@@ -263,11 +271,11 @@ make smoke
 
 ## 9. Test Suite Verification
 
-LedgerGraph includes a complete automated test suite verifying all 30 statutory, graph, and functional requirements:
+LedgerGraph includes a complete automated test suite verifying all 47 statutory, graph, and functional requirements:
 
 ```
 ============================= test session starts ==============================
-collected 30 items
+collected 47 items
 
 api/tests/test_audit.py::test_audit_hash_chain PASSED                    [  3%]
 api/tests/test_audit.py::test_audit_tamper_fails_verification PASSED     [  6%]
@@ -300,7 +308,7 @@ api/tests/test_validate.py::test_check_math_clean PASSED                 [ 93%]
 api/tests/test_validate.py::test_check_math_error PASSED                 [ 96%]
 api/tests/test_validate.py::test_check_tax_type_mismatch PASSED          [100%]
 
-======================== 30 passed in 1.70s =========================
+======================== 47 passed in 5.17s =========================
 ```
 
 ---

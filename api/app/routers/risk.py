@@ -12,7 +12,8 @@ from app.services.risk import (
     calculate_hold_advice,
     check_rule_37_aging,
     get_rule37a_candidates,
-    refresh_vendor_status
+    refresh_vendor_status,
+    get_vendor_accounting_profile
 )
 
 router = APIRouter(prefix="", tags=["risk"])
@@ -21,6 +22,8 @@ class ChaseDraftRequest(BaseModel):
     invoice_id: str
     type: str = "missing_2b"
     language: str = "en"
+    firm_name: Optional[str] = None
+    custom_template: Optional[str] = None
 
 class ChaseApproveRequest(BaseModel):
     invoice_id: str
@@ -39,6 +42,18 @@ def get_vendors_ranking(
 ):
     """Returns suppliers ranked by PageRank, ITC at risk, and filing history."""
     return calculate_vendor_risk_ranking(tenant_id, top_n)
+
+@router.get("/risk/vendors/{gstin}")
+def get_vendor_profile(
+    gstin: str,
+    tenant_id: str = Depends(require_tenant_access),
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Returns comprehensive real accounting, invoice transaction, and statutory risk profile for a supplier."""
+    try:
+        return get_vendor_accounting_profile(tenant_id, gstin)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 @router.get("/risk/impact")
 def get_impact_trace(
@@ -84,7 +99,15 @@ def draft_chase_endpoint(
     tenant_id: str = Depends(require_tenant_access),
     user: Dict[str, Any] = Depends(get_current_user)
 ):
-    return draft_vendor_chase(tenant_id, req.invoice_id, req.type, req.language)
+    firm_name = req.firm_name or "Demo CA & Associates"
+    return draft_vendor_chase(
+        tenant_id=tenant_id,
+        invoice_id=req.invoice_id,
+        chase_type=req.type,
+        lang=req.language,
+        firm_name=firm_name,
+        custom_template=req.custom_template
+    )
 
 @router.post("/chases/approve")
 def approve_chase_endpoint(

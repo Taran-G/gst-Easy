@@ -60,4 +60,35 @@ AUDIT_RESP=$(curl -s -f "$API_BASE/api/v1/audit" \
 EVENT_COUNT=$(echo "$AUDIT_RESP" | grep -o '"event_type"' | wc -l | tr -d ' ')
 echo "OK ($EVENT_COUNT audit events chained)"
 
+# 7. CSV Reconciliation Audit Working Paper
+echo -n "7. Exporting GSTR-2B Audit Working Paper (CSV)... "
+CSV_RESP=$(curl -s -f "$API_BASE/api/v1/reconcile/092026/export-csv" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER")
+if [[ "$CSV_RESP" =~ "LEDGERGRAPH GSTR-2B RECONCILIATION REPORT" ]]; then
+  echo "OK (CSV working paper generated)"
+else
+  echo "FAILED"
+  exit 1
+fi
+
+# 8. Approve and Export Tally XML
+INV_ID=$(echo "$INGEST_RESP" | grep -o '"invoice_id":"[^"]*' | cut -d'"' -f4)
+echo -n "8. Approving Bill and Exporting Tally XML... "
+APPROVE_RESP=$(curl -s -f -X POST "$API_BASE/api/v1/invoices/bulk-approve" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER" \
+  -H "Content-Type: application/json" \
+  -d "{\"invoice_ids\":[\"$INV_ID\"]}")
+
+TALLY_XML=$(curl -s -f -X POST "$API_BASE/api/v1/tally/export" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER" \
+  -H "Content-Type: application/json" \
+  -d "{\"invoice_ids\":[\"$INV_ID\"]}")
+
+if [[ "$TALLY_XML" =~ "ENVELOPE" && "$TALLY_XML" =~ "VOUCHER" ]]; then
+  echo "OK (Zero-sum Tally XML verified)"
+else
+  echo "FAILED"
+  exit 1
+fi
+
 echo "=== ALL SMOKE CHECKS PASSED SUCCESSFULLY ==="

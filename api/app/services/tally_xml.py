@@ -28,43 +28,117 @@ def generate_purchase_voucher_xml(
     Strictly asserts sum(amounts) == Decimal('0.00').
     """
     config = tally_config or {}
-    purchase_ledger_name = config.get("purchase_ledger", "Purchase GST 18%")
+    purchase_ledger_default = config.get("purchase_ledger", "Purchase GST 18%")
+    purchase_template = config.get("purchase_ledger_template", "Purchase GST {rate}%")
     cgst_ledger_name = config.get("cgst_ledger", "Input CGST @ 9%")
     sgst_ledger_name = config.get("sgst_ledger", "Input SGST @ 9%")
     igst_ledger_name = config.get("igst_ledger", "Input IGST @ 18%")
     roundoff_ledger_name = config.get("roundoff_ledger", "Round Off")
 
     supplier = invoice.get("supplier", {})
-    party_ledger = supplier.get("tally_ledger") or f"{supplier.get('name', 'Vendor')} (Sundry Creditors)"
+    party_pattern = config.get("party_ledger_pattern")
+    
+    if supplier.get("tally_ledger"):
+        party_ledger = supplier["tally_ledger"]
+    elif party_pattern:
+        party_ledger = party_pattern.format(
+            name=supplier.get("name", "Vendor"),
+            legal_name=supplier.get("legal_name", supplier.get("name", "Vendor")),
+            gstin=supplier.get("gstin", "")
+        )
+    else:
+        party_ledger = f"{supplier.get('name', 'Vendor')} (Sundry Creditors)"
     
     inv_num_norm = invoice.get("number_norm") or invoice.get("invoice_number", "")
     fy = invoice.get("fy", "2026-27")
     guid = compute_voucher_guid(tenant_id, supplier.get("gstin", ""), inv_num_norm, fy)
     vch_date = format_tally_date(invoice.get("invoice_date", "2026-09-10"))
 
-    # Track amounts with Decimal for zero-sum assertion
+    # Track ledger allocations for zero-sum assertion
+    # Each entry: (ledger_name, is_credit_bool, decimal_amount)
+    ledger_entries: List[tuple] = []
     amounts: List[Decimal] = []
 
     total_amt = Decimal(str(invoice.get("total_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    taxable_amt = Decimal(str(invoice.get("taxable_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    cgst_amt = Decimal(str(invoice.get("cgst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    sgst_amt = Decimal(str(invoice.get("sgst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    igst_amt = Decimal(str(invoice.get("igst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     round_off = Decimal(str(invoice.get("round_off", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     # Party ledger is credit: Positive in Tally
     amounts.append(total_amt)
+    ledger_entries.append((party_ledger, "No", total_amt))
 
-    # Expense and Tax are debits: Negative in Tally
-    amounts.append(-taxable_amt)
-    if cgst_amt > Decimal("0.00"):
-        amounts.append(-cgst_amt)
-    if sgst_amt > Decimal("0.00"):
-        amounts.append(-sgst_amt)
-    if igst_amt > Decimal("0.00"):
-        amounts.append(-igst_amt)
+    lines = invoice.get("lines", [])
+    has_multi_rate_lines = bool(lines and len({l.get("gst_rate") for l in lines if "gst_rate" in l}) > 1)
+
+    if has_multi_rate_lines:
+        # Group lines by rate
+        from collections import defaultdict
+        rate_taxable = defaultdict(Decimal)
+        rate_cgst = defaultdict(Decimal)
+        rate_sgst = defaultdict(Decimal)
+        rate_igst = defaultdict(Decimal)
+
+        for l in lines:
+            r = int(float(l.get("gst_rate", 18.0)))
+            t_val = Decimal(str(l.get("taxable_value", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            c_val = Decimal(str(l.get("cgst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            s_val = Decimal(str(l.get("sgst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            i_val = Decimal(str(l.get("igst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            rate_taxable[r] += t_val
+            rate_cgst[r] += c_val
+            rate_sgst[r] += s_val
+            rate_igst[r] += i_val
+
+        for r, t_val in rate_taxable.items():
+            if t_val > Decimal("0.00"):
+                l_name = "Exempt Purchase" if r == 0 else purchase_template.format(rate=r)
+                amounts.append(-t_val)
+                ledger_entries.append((l_name, "Yes", -t_val))
+
+        for r, c_val in rate_cgst.items():
+            if c_val > Decimal("0.00"):
+                half_r = r / 2
+                half_r_str = f"{half_r:g}"
+                l_name = f"Input CGST @ {half_r_str}%"
+                amounts.append(-c_val)
+                ledger_entries.append((l_name, "Yes", -c_val))
+
+        for r, s_val in rate_sgst.items():
+            if s_val > Decimal("0.00"):
+                half_r = r / 2
+                half_r_str = f"{half_r:g}"
+                l_name = f"Input SGST @ {half_r_str}%"
+                amounts.append(-s_val)
+                ledger_entries.append((l_name, "Yes", -s_val))
+
+        for r, i_val in rate_igst.items():
+            if i_val > Decimal("0.00"):
+                l_name = f"Input IGST @ {r}%"
+                amounts.append(-i_val)
+                ledger_entries.append((l_name, "Yes", -i_val))
+
+    else:
+        # Single-rate or header-level fallback
+        taxable_amt = Decimal(str(invoice.get("taxable_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        cgst_amt = Decimal(str(invoice.get("cgst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        sgst_amt = Decimal(str(invoice.get("sgst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        igst_amt = Decimal(str(invoice.get("igst_amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        amounts.append(-taxable_amt)
+        ledger_entries.append((purchase_ledger_default, "Yes", -taxable_amt))
+
+        if cgst_amt > Decimal("0.00"):
+            amounts.append(-cgst_amt)
+            ledger_entries.append((cgst_ledger_name, "Yes", -cgst_amt))
+        if sgst_amt > Decimal("0.00"):
+            amounts.append(-sgst_amt)
+            ledger_entries.append((sgst_ledger_name, "Yes", -sgst_amt))
+        if igst_amt > Decimal("0.00"):
+            amounts.append(-igst_amt)
+            ledger_entries.append((igst_ledger_name, "Yes", -igst_amt))
+
     if round_off != Decimal("0.00"):
         amounts.append(-round_off)
+        ledger_entries.append((roundoff_ledger_name, "Yes" if round_off > 0 else "No", -round_off))
 
     # ZERO-SUM ASSERTION (SRS FR-TAL-1)
     checksum = sum(amounts)
@@ -84,45 +158,11 @@ def generate_purchase_voucher_xml(
     ET.SubElement(voucher, "PARTYLEDGERNAME").text = party_ledger
     ET.SubElement(voucher, "PERSISTEDVIEW").text = "Invoice Voucher View"
 
-    # 1. Party Ledger Entry (Credit)
-    party_entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
-    ET.SubElement(party_entry, "LEDGERNAME").text = party_ledger
-    ET.SubElement(party_entry, "ISDEEMEDPOSITIVE").text = "No"
-    ET.SubElement(party_entry, "AMOUNT").text = f"{total_amt:.2f}"
-
-    # 2. Purchase / Expense Ledger Entry (Debit)
-    purch_entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
-    ET.SubElement(purch_entry, "LEDGERNAME").text = purchase_ledger_name
-    ET.SubElement(purch_entry, "ISDEEMEDPOSITIVE").text = "Yes"
-    ET.SubElement(purch_entry, "AMOUNT").text = f"{-taxable_amt:.2f}"
-
-    # 3. CGST Entry (Debit)
-    if cgst_amt > Decimal("0.00"):
-        cgst_entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
-        ET.SubElement(cgst_entry, "LEDGERNAME").text = cgst_ledger_name
-        ET.SubElement(cgst_entry, "ISDEEMEDPOSITIVE").text = "Yes"
-        ET.SubElement(cgst_entry, "AMOUNT").text = f"{-cgst_amt:.2f}"
-
-    # 4. SGST Entry (Debit)
-    if sgst_amt > Decimal("0.00"):
-        sgst_entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
-        ET.SubElement(sgst_entry, "LEDGERNAME").text = sgst_ledger_name
-        ET.SubElement(sgst_entry, "ISDEEMEDPOSITIVE").text = "Yes"
-        ET.SubElement(sgst_entry, "AMOUNT").text = f"{-sgst_amt:.2f}"
-
-    # 5. IGST Entry (Debit)
-    if igst_amt > Decimal("0.00"):
-        igst_entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
-        ET.SubElement(igst_entry, "LEDGERNAME").text = igst_ledger_name
-        ET.SubElement(igst_entry, "ISDEEMEDPOSITIVE").text = "Yes"
-        ET.SubElement(igst_entry, "AMOUNT").text = f"{-igst_amt:.2f}"
-
-    # 6. Round off Entry (if any)
-    if round_off != Decimal("0.00"):
-        ro_entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
-        ET.SubElement(ro_entry, "LEDGERNAME").text = roundoff_ledger_name
-        ET.SubElement(ro_entry, "ISDEEMEDPOSITIVE").text = "Yes" if round_off > 0 else "No"
-        ET.SubElement(ro_entry, "AMOUNT").text = f"{-round_off:.2f}"
+    for l_name, deemed_pos, amt in ledger_entries:
+        entry = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
+        ET.SubElement(entry, "LEDGERNAME").text = l_name
+        ET.SubElement(entry, "ISDEEMEDPOSITIVE").text = deemed_pos
+        ET.SubElement(entry, "AMOUNT").text = f"{amt:.2f}"
 
     raw_xml = ET.tostring(voucher, encoding="utf-8")
     return raw_xml.decode("utf-8")

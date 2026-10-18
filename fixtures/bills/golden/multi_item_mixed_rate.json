@@ -1,0 +1,46 @@
+{
+  "supplier_name": "Sharma Steels",
+  "supplier_gstin": "06AABCS1234S1Z4",
+  "buyer_name": "Apex Auto Parts",
+  "buyer_gstin": "06AAACA1234A1ZO",
+  "invoice_number": "INV-2026-MR01",
+  "invoice_date": "2026-09-18",
+  "place_of_supply": "06",
+  "lines": [
+    {
+      "description": "HR Steel Coil 2.5mm",
+      "hsn_sac": "7208",
+      "qty": 5.0,
+      "uom": "MT",
+      "rate": 5000.0,
+      "taxable_value": 25000.0,
+      "gst_rate": 18.0,
+      "cgst_amount": 2250.0,
+      "sgst_amount": 2250.0,
+      "igst_amount": 0.0
+    },
+    {
+      "description": "CR Steel Sheet",
+      "hsn_sac": "7209",
+      "qty": 3.0,
+      "uom": "MT",
+      "rate": 5000.0,
+      "taxable_value": 15000.0,
+      "gst_rate": 12.0,
+      "cgst_amount": 900.0,
+      "sgst_amount": 900.0,
+      "igst_amount": 0.0
+    }
+  ],
+  "taxable_amount": 40000.0,
+  "cgst_amount": 3150.0,
+  "sgst_amount": 3150.0,
+  "igst_amount": 0.0,
+  "round_off": 0.0,
+  "total_amount": 46300.0,
+  "confidences": {
+    "supplier_gstin": 0.99,
+    "invoice_number": 0.98,
+    "total_amount": 0.99
+  }
+}

@@ -22,25 +22,23 @@ services:
 
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     container_name: ledgergraph_api
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     environment:
       - FALKORDB_HOST=falkordb
       - FALKORDB_PORT=6379
       - REDIS_URL=redis://redis:6379/0
-      - MODE=mock
+      - MODE=${MODE:-mock}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - JWT_SECRET=super-secret-jwt-key-for-ledgergraph-hackathon-2026
+      - JWT_SECRET=${JWT_SECRET:-super-secret-jwt-key-for-ledgergraph-production-ca-firm-2026}
       - DATA_DIR=/data/files
       - FIXTURES_DIR=/app/fixtures
       - RULES_PATH=/app/rules/rules.yaml
     volumes:
-      - ./data/files:/data/files
-      - ./fixtures:/app/fixtures
-      - ./rules:/app/rules
+      - api_data:/data/files
     depends_on:
       falkordb:
         condition: service_healthy
@@ -52,12 +50,13 @@ services:
       dockerfile: Dockerfile
     container_name: ledgergraph_web
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3002}:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_API_URL=http://localhost:${API_PORT:-8000}/api/v1
     depends_on:
       - api
     restart: unless-stopped
 
 volumes:
   falkordb_data:
+  api_data:

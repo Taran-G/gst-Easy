@@ -47,6 +47,14 @@ class RulesConfig:
         return self._data.get("validation", {}).get("tolerance_rupees", 1.0)
 
     @property
+    def rule_37_statutory_days(self) -> int:
+        return self._data.get("rules", {}).get("rule_37", {}).get("statutory_days", 180)
+
+    @property
+    def rule_37_warning_days(self) -> int:
+        return self._data.get("rules", {}).get("rule_37", {}).get("warning_days", 150)
+
+    @property
     def rule_37_alert_days(self) -> List[int]:
         return self._data.get("rules", {}).get("rule_37", {}).get("alert_days", [120, 150, 170])
 

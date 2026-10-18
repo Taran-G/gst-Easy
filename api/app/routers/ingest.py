@@ -165,3 +165,15 @@ async def simulate_submission(
     )
     
     return result
+
+@router.post("/ingest/reset-demo")
+async def reset_demo_state(
+    tenant_id: str = Depends(require_tenant_access),
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Resets the demo graphs for clean testing and eliminates duplicate entries.
+    """
+    from app.seed import seed_database
+    seed_database(reset=True)
+    return {"status": "success", "message": "Demo state successfully reset to clean baseline."}

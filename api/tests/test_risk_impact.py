@@ -6,9 +6,10 @@ from app.services.risk import (
     calculate_vendor_risk_ranking,
     calculate_hold_advice,
     check_rule_37_aging,
-    refresh_vendor_status
+    refresh_vendor_status,
+    get_vendor_accounting_profile
 )
-from app.services.chase import check_chase_eligibility, approve_and_send_chase
+from app.services.chase import check_chase_eligibility, approve_and_send_chase, draft_vendor_chase
 
 def test_impact_trace_sharma_steels():
     tenant_id = "test_risk_tenant"
@@ -121,3 +122,90 @@ def test_chase_rate_limit_and_optout():
     eligibility = check_chase_eligibility(tenant_id, "06AABCK9999K1ZO")
     assert eligibility["allowed"] is False
     assert "opted out" in eligibility["reason"].lower()
+
+def test_chase_hinglish_and_rule_37_template():
+    tenant_id = "test_chase_templates_tenant"
+    try:
+        tenant_graph(tenant_id).delete()
+    except Exception:
+        pass
+    g = tenant_graph(tenant_id)
+    
+    g.query(
+        """
+        MERGE (v:Vendor {gstin: "06AABCS1234S1Z4"})
+        SET v.legal_name = "Sharma Steels",
+            v.phone = "+919876543210"
+        CREATE (i:Invoice {
+            id: "inv_chase_test",
+            number: "SS-2026-99",
+            date: "2026-05-15",
+            total: 59000.0,
+            taxable: 50000.0,
+            cgst: 4500.0,
+            sgst: 4500.0,
+            igst: 0.0,
+            state: "POSTED"
+        })
+        CREATE (v)-[:ISSUED]->(i)
+        """
+    )
+    
+    draft = draft_vendor_chase(
+        tenant_id=tenant_id,
+        invoice_id="inv_chase_test",
+        chase_type="rule_37_warning",
+        lang="hinglish",
+        firm_name="R.K. Aggarwal & Co. Chartered Accountants"
+    )
+    
+    assert draft["eligible"] is True
+    assert "Statutory Alert" in draft["rendered_text"]
+    assert "180-day" in draft["rendered_text"]
+    assert "SS-2026-99" in draft["rendered_text"]
+    assert "R.K. Aggarwal & Co. Chartered Accountants" in draft["rendered_text"]
+
+def test_vendor_accounting_profile_real_data():
+    tenant_id = "test_profile_tenant"
+    try:
+        tenant_graph(tenant_id).delete()
+    except Exception:
+        pass
+    g = tenant_graph(tenant_id)
+
+    # Seed vendor with Tally ledger and real invoices
+    g.query(
+        """
+        MERGE (v:Vendor {gstin: "06AABCS1234S1Z4"})
+        SET v.legal_name = "Sharma Steels",
+            v.gstin_status = "Active",
+            v.filing_freq = "Monthly"
+        MERGE (tl:TallyLedger {name: "Sharma Steels (Sundry Creditors)"})
+        MERGE (v)-[:MAPS_TO_LEDGER]->(tl)
+        CREATE (i1:Invoice {
+            id: "inv_p1",
+            number: "INV-P01",
+            date: "2026-09-10",
+            taxable: 20000.0,
+            cgst: 1800.0,
+            sgst: 1800.0,
+            igst: 0.0,
+            total: 23600.0,
+            state: "READY",
+            itc_status: "ELIGIBLE_PENDING_2B"
+        })
+        CREATE (v)-[:ISSUED]->(i1)
+        """
+    )
+
+    prof = get_vendor_accounting_profile(tenant_id, "06AABCS1234S1Z4")
+    assert prof["supplier"]["legal_name"] == "Sharma Steels"
+    assert prof["supplier"]["tally_ledger"] == "Sharma Steels (Sundry Creditors)"
+    assert prof["stats"]["total_invoices"] == 1
+    assert prof["stats"]["total_spend"] == 23600.0
+    assert prof["stats"]["safe_to_release"] == 20000.0 # Base goods value
+    assert prof["stats"]["hold_advised"] == 3600.0     # GST portion missing in 2B
+    assert len(prof["invoices"]) == 1
+    assert prof["invoices"][0]["hold_advice"] == "HOLD_GST"
+
+

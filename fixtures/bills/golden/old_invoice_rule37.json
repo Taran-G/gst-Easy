@@ -1,0 +1,34 @@
+{
+  "supplier_name": "Delta Fasteners",
+  "supplier_gstin": "06AABCD9012D1Z6",
+  "buyer_name": "Apex Auto Parts",
+  "buyer_gstin": "06AAACA1234A1ZO",
+  "invoice_number": "DF-2025-998",
+  "invoice_date": "2026-02-10",
+  "place_of_supply": "06",
+  "lines": [
+    {
+      "description": "High Tensile Bolts",
+      "hsn_sac": "7318",
+      "qty": 500.0,
+      "uom": "PCS",
+      "rate": 20.0,
+      "taxable_value": 10000.0,
+      "gst_rate": 18.0,
+      "cgst_amount": 900.0,
+      "sgst_amount": 900.0,
+      "igst_amount": 0.0
+    }
+  ],
+  "taxable_amount": 10000.0,
+  "cgst_amount": 900.0,
+  "sgst_amount": 900.0,
+  "igst_amount": 0.0,
+  "round_off": 0.0,
+  "total_amount": 11800.0,
+  "confidences": {
+    "supplier_gstin": 0.99,
+    "invoice_number": 0.98,
+    "total_amount": 0.99
+  }
+}
