@@ -98,40 +98,18 @@ async def whatsapp_webhook(
     except Exception:
         payload = {}
         
-    # 2. Parse payload
-    event = wa_adapter.parse_webhook(payload)
-    if not event:
-        # Acknowledgment for status updates (sent, delivered, read)
-        return {"status": "ignored_status_or_empty"}
+    # 2. Process event via central whatsapp service
+    from app.services.whatsapp import handle_incoming_whatsapp
+    result = handle_incoming_whatsapp(payload)
+    if result.get("status") == "ignored_status_or_empty":
+        return result
         
-    sender_phone = event.get("sender_phone") or "+919876543210"
-    
-    # 3. Route tenant by PhoneMap in Firm Graph
-    fg = firm_graph("demo")
-    routed_tenant = "apex" # Default fallback
-    res = fg.query("MATCH (pm:PhoneMap {phone: $phone}) RETURN pm.tenant_id", {"phone": sender_phone})
-    if res.result_set and len(res.result_set) > 0:
-        routed_tenant = res.result_set[0][0]
-        
-    # 4. Resolve target document path
-    target_path = event.get("media_path")
-    if not target_path or not os.path.exists(target_path):
-        # Fallback to fixture or clean intrastate sample if test message
-        target_path = str(Path(settings.FIXTURES_DIR) / "bills" / "clean_intrastate.pdf")
-        
-    result = process_document(
-        tenant_id=routed_tenant,
-        file_path=target_path,
-        source="whatsapp",
-        sender_phone=sender_phone,
-        user_id="whatsapp_cloud_bot"
-    )
-    
     return {
         "status": "success",
-        "routed_tenant": routed_tenant,
+        "routed_tenant": result.get("routed_tenant", "apex"),
         "invoice_id": result.get("invoice_id"),
-        "state": result.get("state")
+        "state": result.get("state"),
+        "reply": result.get("outbound_reply", {}).get("text")
     }
 
 @router.post("/ingest/simulate")

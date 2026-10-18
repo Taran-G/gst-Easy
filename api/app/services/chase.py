@@ -194,6 +194,24 @@ def approve_and_send_chase(
         user_id=user_id,
         payload={"invoice_id": invoice_id, "chase_id": chase_id, "cost_inr": draft["cost_inr"]}
     )
+
+    try:
+        from app.services.whatsapp import record_whatsapp_message
+        record_whatsapp_message(
+            tenant_id=tenant_id,
+            direction="OUTBOUND",
+            sender_phone="CA Partner",
+            recipient_phone=draft["phone"],
+            message_type="template",
+            text=draft["rendered_text"],
+            invoice_id=invoice_id,
+            status="DELIVERED",
+            cost_inr=draft["cost_inr"],
+            template_name=f"gst_reminder_{chase_type}",
+            vendor_gstin=draft["vendor_gstin"]
+        )
+    except Exception as e:
+        pass
     
     return {
         "status": "sent",

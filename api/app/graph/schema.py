@@ -9,6 +9,8 @@ TENANT_INDEXES = [
     ("Invoice", "fy"),
     ("GSTR2BEntry", "period"),
     ("FilingStatus", "gstin"),
+    ("WhatsAppMessage", "id"),
+    ("WhatsAppMessage", "timestamp"),
 ]
 
 FIRM_INDEXES = [

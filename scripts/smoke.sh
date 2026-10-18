@@ -91,4 +91,42 @@ else
   exit 1
 fi
 
+# 9. WhatsApp Bill Import & Agent Auto-Reply
+echo -n "9. Testing WhatsApp Bill Import & Auto-Reply... "
+WA_BILL_RESP=$(curl -s -f -X POST "$API_BASE/api/v1/whatsapp/simulate/bill" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER" \
+  -F "fixture_name=clean_interstate" \
+  -F "phone=+919876543210" \
+  -F "caption=Attached Reliable Transport invoice")
+if [[ "$WA_BILL_RESP" =~ "outbound_reply" ]]; then
+  echo "OK (Inbound bill ingested & Agent auto-reply dispatched)"
+else
+  echo "FAILED"
+  exit 1
+fi
+
+# 10. WhatsApp Text Query & Agent Intent Reply
+echo -n "10. Testing WhatsApp Text Query & Agent Reply... "
+WA_TEXT_RESP=$(curl -s -f -X POST "$API_BASE/api/v1/whatsapp/simulate/text" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER" \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"+919876543210","text":"What is status of our pending bills?"}')
+if [[ "$WA_TEXT_RESP" =~ "outbound_reply" ]]; then
+  echo "OK (Agent replied with live account summary)"
+else
+  echo "FAILED"
+  exit 1
+fi
+
+# 11. WhatsApp Message Ledger CSV Export
+echo -n "11. Exporting WhatsApp Communications Ledger (CSV)... "
+WA_CSV_RESP=$(curl -s -f "$API_BASE/api/v1/whatsapp/export" \
+  -H "$AUTH_HEADER" -H "$TENANT_HEADER")
+if [[ "$WA_CSV_RESP" =~ "Message ID" && "$WA_CSV_RESP" =~ "INBOUND" && "$WA_CSV_RESP" =~ "OUTBOUND" ]]; then
+  echo "OK (WhatsApp audit working paper generated)"
+else
+  echo "FAILED"
+  exit 1
+fi
+
 echo "=== ALL SMOKE CHECKS PASSED SUCCESSFULLY ==="

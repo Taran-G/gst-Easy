@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.routers import auth, invoices, ingest, masters, reconcile, risk
+from app.routers import auth, invoices, ingest, masters, reconcile, risk, whatsapp
 from app.graph.client import get_db
 
 app = FastAPI(
@@ -63,6 +63,7 @@ app.include_router(ingest.router, prefix=settings.API_V1_STR)
 app.include_router(masters.router, prefix=settings.API_V1_STR)
 app.include_router(reconcile.router, prefix=settings.API_V1_STR)
 app.include_router(risk.router, prefix=settings.API_V1_STR)
+app.include_router(whatsapp.router, prefix=settings.API_V1_STR)
 
 # Serve files locally for review drawer / preview
 os.makedirs(settings.DATA_DIR, exist_ok=True)
