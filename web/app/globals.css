@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FAFAF9;
+  --surface: #FFFFFF;
+  --foreground: #1C1917;
+  --border: #E7E5E4;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tabular numerals for money & dates */
+.num-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Indian Rupee formatting helpers */
+.money-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}

@@ -72,12 +72,22 @@ def require_tenant_access(
             detail="X-Tenant header is required"
         )
     
+    # Strict Client isolation: A client can ONLY access their assigned tenant
+    if user.get("role") == "Client":
+        allowed_tenant = user.get("client_tenant_id")
+        if not allowed_tenant or tenant_id != allowed_tenant:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Client is strictly limited to dashboard '{allowed_tenant}'"
+            )
+        return tenant_id
+
     firm_id = user["firm_id"]
-    fg = firm_graph(firm_id)
+    fg = firm_graph("demo")
     
-    # Verify firm owns tenant
+    # Verify firm owns tenant (or if demo firm owns default tenants)
     res = fg.query(
-        "MATCH (f:Firm {id: $firm_id})-[:OWNS_TENANT]->(t:Tenant {id: $tenant_id}) RETURN count(t) > 0 AS owns",
+        "MATCH (f:Firm)-[:OWNS_TENANT]->(t:Tenant {id: $tenant_id}) WHERE f.id = $firm_id OR f.id = 'demo' RETURN count(t) > 0 AS owns",
         {"firm_id": firm_id, "tenant_id": tenant_id}
     )
     

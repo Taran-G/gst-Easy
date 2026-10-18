@@ -17,9 +17,11 @@ class IntervalRequest(BaseModel):
 
 class SimulateIncomingEmailRequest(BaseModel):
     from_addr: str = "sharma@sharmasteels.com"
-    subject: str = "Tax Invoice for Steel Supply — Apex Auto Parts"
-    body: str = "Dear Accounts Team,\n\nPlease find attached tax invoice copy for material delivered. Kindly process payment.\n\nRegards,\nSharma Steels"
+    subject: str = "Tax Invoice from Sharma Steels Ltd — Apex Auto Parts"
+    body: str = "Dear Accounts Team,\n\nPlease find attached tax invoice copy from Sharma Steels Ltd for material delivered. Kindly process payment.\n\nRegards,\nSharma Steels Ltd"
     fixture_name: Optional[str] = "clean_intrastate"
+    company_name: Optional[str] = "Sharma Steels Ltd"
+    is_gstr2b_notification: Optional[bool] = False
 
 class ConfigureEmailRequest(BaseModel):
     mode: str = "prototype"  # prototype | live_gmail
@@ -109,16 +111,27 @@ async def simulate_incoming_vendor_email(
     Simulates a supplier sending an email with an invoice attachment.
     The email is dropped into the agent's watched inbox and automatically processed!
     """
+    if req.is_gstr2b_notification:
+        from_addr = "donotreply@gst.gov.in"
+        subject = req.subject or "Intimation of auto-drafted ITC statement in Form GSTR-2B for September 2026 (092026)"
+        body_text = req.body or "Dear Taxpayer,\n\nForm GSTR-2B for tax period September 2026 (092026) has been generated and is available on the GST Portal for GSTIN 06AAACA1234A1Z5.\n\nReconcile your Input Tax Credit (ITC) before filing GSTR-3B."
+        fixture_name = None
+    else:
+        from_addr = req.from_addr
+        subject = req.subject
+        body_text = req.body
+        fixture_name = req.fixture_name
+
     new_eml = email_service.simulate_incoming_email(
-        from_addr=req.from_addr,
-        subject=req.subject,
-        body_text=req.body,
-        fixture_name=req.fixture_name
+        from_addr=from_addr,
+        subject=subject,
+        body_text=body_text,
+        fixture_name=fixture_name
     )
     
     agent_engine.log(
         "EMAIL_DELIVERED",
-        f"New incoming email dropped in watched inbox: '{req.subject}' from {req.from_addr}.",
+        f"New incoming email dropped in watched inbox: '{subject}' from {from_addr}.",
         "INFO"
     )
 

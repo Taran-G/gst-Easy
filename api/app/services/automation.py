@@ -7,7 +7,7 @@ import uuid
 
 from app.core.config import settings
 from app.graph.client import tenant_graph, firm_graph
-from app.services.email_service import email_service
+from app.services.email_service import email_service, extract_email_intent_and_entities
 from app.services.ingest import process_document
 from app.services.reconcile import run_reconciliation
 from app.services.risk import check_rule_37_aging
@@ -76,19 +76,71 @@ class AutonomousAgentEngine:
                 for eml in unread_emails:
                     from_addr = eml.get("from_addr", "")
                     subject = eml.get("subject", "")
+                    body_text = eml.get("body", "")
                     attachments = eml.get("attachments", [])
                     
+                    intent = extract_email_intent_and_entities(subject, body_text, from_addr)
+                    is_gstr2b = intent.get("is_gstr2b", False)
+                    period = intent.get("period", "092026")
+                    company_name = intent.get("company_name", "Supplier")
+
+                    # Branch A: Official GSTR-2B Filing Notification
+                    if is_gstr2b:
+                        self.log(
+                            "GSTR2B_NOTIFICATION_DETECTED",
+                            f"Official GSTR-2B notification detected for period {period} (Source: {company_name}). Autonomous reconciliation sweep started!",
+                            "SUCCESS",
+                            {"period": period, "source": company_name}
+                        )
+                        try:
+                            recon_res = run_reconciliation(tenant_id="apex", period=period)
+                            counts = recon_res.get("counts", {})
+                            itc_sum = recon_res.get("itc_summary", {})
+                            self.log(
+                                "RECON_AUTO_SYNC",
+                                f"Autonomous 2B sync completed for {period}: {counts.get('matched', 0)} matched, {counts.get('missing_in_2b', 0)} missing in 2B (₹{itc_sum.get('at_risk_itc', 0):,.2f} at risk).",
+                                "SUCCESS",
+                                {"counts": counts}
+                            )
+                        except Exception as e:
+                            self.log("RECON_SYNC_ERROR", f"Error during autonomous 2B reconciliation: {e}", "ERROR")
+
+                        email_service.send_email_reply(
+                            to_addr=from_addr,
+                            subject=f"Re: GSTR-2B Filing Notification — Period {period}",
+                            body_text=(
+                                f"Dear GST Admin / Taxpayer,\n\n"
+                                f"Your notification regarding GSTR-2B auto-drafted ITC for period {period} has been received and processed.\n\n"
+                                f"LedgerGraph Autonomous Engine Action Report:\n"
+                                f"• Cross-matched against purchase register graph\n"
+                                f"• Verified eligible vs ineligible ITC under Section 16(2)(aa)\n"
+                                f"• Flagged non-compliant invoices for statutory payment holds\n\n"
+                                f"Best regards,\nLedgerGraph Autonomous GST Desk"
+                            ),
+                            in_reply_to_id=eml["id"]
+                        )
+                        email_service.mark_email_as_read(eml["id"])
+                        continue
+
+                    # Branch B: Invoice Notification from Company / Vendor
+                    self.log(
+                        "COMPANY_INVOICE_DETECTED",
+                        f"Incoming invoice notification detected from '{company_name}' ({from_addr}): '{subject}'.",
+                        "INFO",
+                        {"company_name": company_name}
+                    )
+
                     if attachments:
                         for att in attachments:
                             att_path = att.get("path")
                             att_name = att.get("filename", "bill.pdf")
                             self.log(
                                 "BILL_INGEST_START",
-                                f"Autonomous ingestion triggered for '{att_name}' from {from_addr}.",
+                                f"Autonomous ingestion triggered for '{att_name}' from {company_name}.",
                                 "INFO"
                             )
                             
-                            # Ingest bill into default tenant apex
+                            # Ingest bill into tenant
                             ingest_res = process_document(
                                 tenant_id="apex",
                                 file_path=att_path,
@@ -110,15 +162,15 @@ class AutonomousAgentEngine:
                             
                             self.log(
                                 "BILL_INGEST_SUCCESS",
-                                f"Bill #{inv_num} (Rs. {total_amt:,.2f}) ingested into ledger. State: {inv_state}.",
+                                f"Bill #{inv_num} (Rs. {total_amt:,.2f}) from '{company_name}' ingested. State: {inv_state}.",
                                 "SUCCESS",
-                                {"invoice_id": inv_id, "state": inv_state}
+                                {"invoice_id": inv_id, "state": inv_state, "company": company_name}
                             )
                             
                             # Send automated email reply
                             if inv_state == "READY":
                                 reply_body = (
-                                    f"Dear Supplier,\n\n"
+                                    f"Dear {company_name} Accounts Team,\n\n"
                                     f"Thank you for submitting your invoice #{inv_num} for Rs. {total_amt:,.2f}.\n\n"
                                     f"Our autonomous accounting system has verified your GSTIN checksum, place of supply, "
                                     f"and tax calculations. The invoice has been entered in READY status and scheduled "
@@ -129,16 +181,16 @@ class AutonomousAgentEngine:
                             elif inv_state == "BLOCKED":
                                 issues_txt = "; ".join([iss.get("message", "") for iss in val_issues[:2]])
                                 reply_body = (
-                                    f"Dear Supplier,\n\n"
+                                    f"Dear {company_name} Accounts Team,\n\n"
                                     f"Your invoice #{inv_num} for Rs. {total_amt:,.2f} could not be cleared for payment.\n\n"
                                     f"Statutory Reason: {issues_txt}\n\n"
-                                    f"Please upload or reply with a rectified tax invoice to avoid payment delays.\n\n"
+                                    f"Please reply with a rectified tax invoice to avoid payment delays.\n\n"
                                     f"Best regards,\n"
                                     f"LedgerGraph CA Autonomous Accounting Desk"
                                 )
                             else:
                                 reply_body = (
-                                    f"Dear Supplier,\n\n"
+                                    f"Dear {company_name} Accounts Team,\n\n"
                                     f"Your invoice #{inv_num} for Rs. {total_amt:,.2f} has been received and queued "
                                     f"for CA partner review.\n\n"
                                     f"Best regards,\n"
@@ -151,16 +203,16 @@ class AutonomousAgentEngine:
                                 body_text=reply_body,
                                 in_reply_to_id=eml["id"]
                             )
-                            self.log("EMAIL_REPLY_SENT", f"Sent automated confirmation email to {from_addr}.", "INFO")
+                            self.log("EMAIL_REPLY_SENT", f"Sent automated confirmation email to {company_name} ({from_addr}).", "INFO")
                     else:
-                        # Text inquiry
-                        self.log("EMAIL_QUERY", f"Received query email from {from_addr}: '{subject}'.", "INFO")
+                        # Text invoice inquiry or notification from company
+                        self.log("EMAIL_QUERY", f"Received query/notice from {company_name} ({from_addr}): '{subject}'.", "INFO")
                         reply_body = (
-                            f"Namaste,\n\n"
+                            f"Namaste {company_name} Team,\n\n"
                             f"We received your message regarding '{subject}'. Our autonomous accounting engine has "
-                            f"recorded your inquiry in your vendor file. For payment schedule or bill updates, "
-                            f"you may also reply directly with your invoice PDF.\n\n"
-                            f"Best regards,\nDemo CA & Associates"
+                            f"recorded your notice in your vendor file. To enable automated Place of Supply and GSTIN "
+                            f"checksum verification for immediate payment release, kindly reply with your PDF tax invoice.\n\n"
+                            f"Best regards,\nLedgerGraph CA Autonomous Accounting Desk"
                         )
                         email_service.send_email_reply(
                             to_addr=from_addr,

@@ -32,6 +32,74 @@ def decode_mime_words(s: str) -> str:
             result.append(str(frag))
     return "".join(result)
 
+import re
+
+def extract_email_intent_and_entities(subject: str, body: str, from_addr: str) -> Dict[str, Any]:
+    """
+    Parses email subject and body to identify:
+    1. GSTR-2B filing notifications
+    2. Company / Vendor names for invoices
+    3. Filing tax period (MMYYYY)
+    """
+    full_text = f"{subject} {body}".lower()
+    
+    # 1. GSTR-2B notification check
+    is_gstr2b = False
+    gstr2b_keywords = [
+        "gstr-2b", "gstr 2b", "gstr2b", "form gstr-2b",
+        "auto-drafted itc", "gst return filed", "return notification",
+        "itc statement", "gstr-2b generated"
+    ]
+    if any(k in full_text for k in gstr2b_keywords):
+        is_gstr2b = True
+
+    # Detect filing period (e.g. 092026, 082026, Sep 2026)
+    period = "092026"
+    period_match = re.search(r'\b(0[1-9]|1[0-2])(202[4-9])\b', full_text)
+    if period_match:
+        period = period_match.group(0)
+    elif "sep" in full_text or "september" in full_text:
+        period = "092026"
+    elif "aug" in full_text or "august" in full_text:
+        period = "082026"
+    elif "jul" in full_text or "july" in full_text:
+        period = "072026"
+
+    # 2. Company / Vendor name extraction
+    detected_company = ""
+    # Try sender header first: e.g. "Sharma Steels <sharma@sharmasteels.com>"
+    if "<" in from_addr:
+        display_name = from_addr.split("<")[0].replace('"', '').strip()
+        if display_name and "@" not in display_name:
+            detected_company = display_name
+            
+    # If generic or empty, extract from subject
+    if not detected_company or detected_company.lower() in ["info", "accounts", "billing", "no-reply", "noreply", "gst system", "gst portal", "tax invoice"]:
+        # 1. Try "from/by <Company Name>"
+        match = re.search(r'\b(?:from|by)\s+([A-Za-z0-9\s&.,-]+?)(?:\s+for|\s+dated|\s+-|\s+—|$)', subject, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip()
+            if len(candidate) > 2 and candidate.lower() not in ["apex", "apex auto"]:
+                detected_company = candidate
+        
+        # 2. Try company corporate suffixes (Ltd, Steels, Enterprises, etc.)
+        if not detected_company or detected_company.lower() in ["tax invoice", "invoice", "bill"]:
+            match2 = re.search(r'\b([A-Za-z0-9&.,\s]+?\s+(?:pvt|ltd|limited|enterprises|steels|motors|traders|technologies|solutions|corporation|industries))\b', subject, re.IGNORECASE)
+            if match2:
+                detected_company = match2.group(1).strip()
+
+    if not detected_company:
+        if is_gstr2b:
+            detected_company = "GST Common Portal"
+        else:
+            detected_company = "Supplier / Vendor"
+
+    return {
+        "is_gstr2b": is_gstr2b,
+        "period": period,
+        "company_name": detected_company
+    }
+
 class EmailService:
     def __init__(self):
         self.mode = settings.EMAIL_MODE
