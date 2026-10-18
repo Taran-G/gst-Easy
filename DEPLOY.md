@@ -38,8 +38,8 @@ Recommended hardware:
 
 ### Step 1: Clone Repository & Configure Environment
 ```bash
-git clone https://github.com/your-org/gstEasy.git
-cd gstEasy
+git clone https://github.com/Taran-G/gst-Easy.git
+cd gst-Easy
 
 # Copy production environment variables
 cp .env.example .env
@@ -49,15 +49,15 @@ cp .env.example .env
 ```ini
 # Core Configuration
 MODE=live
-GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 JWT_SECRET=generate_with_openssl_rand_hex_32
 
 # Production Domain URLs
 ALLOWED_ORIGINS=https://app.yourdomain.com,https://api.yourdomain.com
 
 # Meta WhatsApp Cloud API (Optional - required for live incoming bills)
-WHATSAPP_PHONE_NUMBER_ID=1092837465...
-WHATSAPP_ACCESS_TOKEN=EAA...
+WHATSAPP_PHONE_NUMBER_ID=your_whatsapp_phone_number_id
+WHATSAPP_ACCESS_TOKEN=your_whatsapp_access_token
 WHATSAPP_VERIFY_TOKEN=your_custom_webhook_secret
 
 # GST Suvidha Provider (Optional - mock fixtures used by default if empty)

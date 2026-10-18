@@ -33,7 +33,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - MODE=${MODE:-mock}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - JWT_SECRET=${JWT_SECRET:-super-secret-jwt-key-for-ledgergraph-production-ca-firm-2026}
+      - JWT_SECRET=${JWT_SECRET:-dev-insecure-jwt-secret-change-in-production}
       - DATA_DIR=/data/files
       - FIXTURES_DIR=/app/fixtures
       - RULES_PATH=/app/rules/rules.yaml

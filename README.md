@@ -230,8 +230,8 @@ LedgerGraph exposes a standard Model Context Protocol (MCP) tool server at `api/
 ### One-Command Setup
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-org/ledgergraph.git
-cd ledgergraph
+git clone https://github.com/Taran-G/gst-Easy.git
+cd gst-Easy
 
 # 2. Start FalkorDB and Redis
 make up

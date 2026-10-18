@@ -4,9 +4,6 @@ __pycache__/
 *$py.class
 *.so
 
-# C extensions
-*.so
-
 # Distribution / packaging
 .Python
 build/
@@ -26,8 +23,17 @@ share/python-wheels/
 .installed.cfg
 *.egg
 
-# Virtual environments
+# Environment and sensitive credential files
 .env
+.env.*
+.env*.local
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+
+# Virtual environments
 .venv
 env/
 venv/
@@ -40,13 +46,17 @@ venv.bak/
 .coverage
 htmlcov/
 
-# Temporary data files
+# Temporary data files & uploads
 data/files/*
 !data/files/.gitkeep
+fixtures/real_bills/
+
+# Logs & OS artifacts
+*.log
+.DS_Store
+Thumbs.db
 
 # Next.js / Node
 node_modules/
 .next/
 out/
-.DS_Store
-*.pem
